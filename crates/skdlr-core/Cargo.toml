@@ -1,0 +1,42 @@
+[package]
+name = "skdlr-core"
+version.workspace = true
+edition.workspace = true
+description = "Core library for skdlr - cross-platform task scheduler"
+
+[features]
+default = ["backend-auto"]
+
+# Auto-select backend based on target OS
+backend-auto = []
+
+# Individual backend features (for explicit selection)
+backend-systemd = []
+backend-launchd = []
+backend-schtasks = []
+backend-internal = []
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+log.workspace = true
+tracing.workspace = true
+config.workspace = true
+dirs.workspace = true
+shellexpand.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+cron.workspace = true
+rusqlite.workspace = true
+tokio = { workspace = true, features = ["process", "fs", "io-util", "time"] }
+async-trait.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# For systemd unit file generation and systemctl interaction
+# Using process spawning for now, could add zbus for D-Bus later
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Windows Task Scheduler via schtasks.exe CLI

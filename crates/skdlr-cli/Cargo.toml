@@ -1,0 +1,23 @@
+[package]
+name = "skdlr-cli"
+version.workspace = true
+edition.workspace = true
+description = "Cross-platform task scheduler CLI"
+
+[[bin]]
+name = "skdlr"
+path = "src/main.rs"
+
+[dependencies]
+skdlr-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+env_logger.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+cron.workspace = true

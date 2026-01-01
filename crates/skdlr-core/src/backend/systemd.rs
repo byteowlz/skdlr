@@ -1,0 +1,361 @@
+//! Linux systemd backend.
+//!
+//! Uses systemd user timers for scheduling. Creates .timer and .service files
+//! in ~/.config/systemd/user/ and manages them via systemctl --user.
+
+use std::path::PathBuf;
+
+use tokio::process::Command;
+
+use super::{Backend, BackendKind, BoxFuture};
+use crate::SkdlrConfig;
+use crate::error::{Error, Result};
+use crate::models::{Run, Schedule};
+use crate::validation::validate_schedule;
+
+/// Systemd backend for Linux.
+pub struct SystemdBackend {
+    /// Prefix for service/timer names.
+    service_prefix: String,
+    /// Path to systemd user directory.
+    user_dir: PathBuf,
+}
+
+impl SystemdBackend {
+    /// Creates a new systemd backend.
+    pub fn new(config: &SkdlrConfig) -> Self {
+        let user_dir = dirs::config_dir()
+            .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("systemd/user");
+
+        Self {
+            service_prefix: config.service_prefix.clone(),
+            user_dir,
+        }
+    }
+
+    /// Returns the service unit name for a schedule.
+    fn service_name(&self, schedule: &Schedule) -> String {
+        format!("{}-{}.service", self.service_prefix, schedule.name)
+    }
+
+    /// Returns the timer unit name for a schedule.
+    fn timer_name(&self, schedule: &Schedule) -> String {
+        format!("{}-{}.timer", self.service_prefix, schedule.name)
+    }
+
+    /// Returns the path to the service file.
+    fn service_path(&self, schedule: &Schedule) -> PathBuf {
+        self.user_dir.join(self.service_name(schedule))
+    }
+
+    /// Returns the path to the timer file.
+    fn timer_path(&self, schedule: &Schedule) -> PathBuf {
+        self.user_dir.join(self.timer_name(schedule))
+    }
+
+    /// Generates the service unit file content.
+    fn generate_service(&self, schedule: &Schedule) -> String {
+        let mut content = format!(
+            "[Unit]\n\
+             Description=skdlr: {}\n\
+             \n\
+             [Service]\n\
+             Type=oneshot\n\
+             ExecStart=/bin/sh -c '{}'\n",
+            schedule.description.as_deref().unwrap_or(&schedule.name),
+            schedule.command.replace('\'', "'\\''"),
+        );
+
+        if let Some(workdir) = &schedule.workdir {
+            content.push_str(&format!("WorkingDirectory={}\n", workdir));
+        }
+
+        for (key, value) in &schedule.env {
+            content.push_str(&format!("Environment=\"{}={}\"\n", key, value));
+        }
+
+        content
+    }
+
+    /// Generates the timer unit file content.
+    fn generate_timer(&self, schedule: &Schedule) -> Result<String> {
+        // Convert cron expression to systemd OnCalendar format
+        let on_calendar = cron_to_oncalendar(&schedule.cron_expr)?;
+
+        Ok(format!(
+            "[Unit]\n\
+             Description=Timer for skdlr: {}\n\
+             Requires={}\n\
+             \n\
+             [Timer]\n\
+             OnCalendar={}\n\
+             Persistent=true\n\
+             \n\
+             [Install]\n\
+             WantedBy=timers.target\n",
+            schedule.name,
+            self.service_name(schedule),
+            on_calendar,
+        ))
+    }
+
+    /// Runs systemctl with the given arguments.
+    async fn systemctl(&self, args: &[&str]) -> Result<std::process::Output> {
+        let output = Command::new("systemctl")
+            .arg("--user")
+            .args(args)
+            .output()
+            .await?;
+
+        Ok(output)
+    }
+
+    /// Reloads the systemd daemon.
+    async fn daemon_reload(&self) -> Result<()> {
+        self.systemctl(&["daemon-reload"]).await?;
+        Ok(())
+    }
+}
+
+impl Backend for SystemdBackend {
+    fn kind(&self) -> BackendKind {
+        BackendKind::Systemd
+    }
+
+    fn install<'a>(&'a self, schedule: &'a Schedule) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            validate_schedule(schedule)?;
+
+            // Ensure user directory exists
+            tokio::fs::create_dir_all(&self.user_dir).await?;
+
+            // Write service file
+            let service_content = self.generate_service(schedule);
+            tokio::fs::write(self.service_path(schedule), service_content).await?;
+
+            // Write timer file
+            let timer_content = self.generate_timer(schedule)?;
+            tokio::fs::write(self.timer_path(schedule), timer_content).await?;
+
+            // Reload daemon
+            self.daemon_reload().await?;
+
+            Ok(())
+        })
+    }
+
+    fn uninstall<'a>(&'a self, schedule: &'a Schedule) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            // Disable first (ignore errors if not enabled)
+            let _ = self.disable(schedule).await;
+
+            // Remove files
+            let _ = tokio::fs::remove_file(self.service_path(schedule)).await;
+            let _ = tokio::fs::remove_file(self.timer_path(schedule)).await;
+
+            // Reload daemon
+            self.daemon_reload().await?;
+
+            Ok(())
+        })
+    }
+
+    fn enable<'a>(&'a self, schedule: &'a Schedule) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let timer = self.timer_name(schedule);
+            let output = self.systemctl(&["enable", "--now", &timer]).await?;
+
+            if !output.status.success() {
+                return Err(Error::backend(format!(
+                    "failed to enable timer: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+
+            Ok(())
+        })
+    }
+
+    fn disable<'a>(&'a self, schedule: &'a Schedule) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let timer = self.timer_name(schedule);
+            let output = self.systemctl(&["disable", "--now", &timer]).await?;
+
+            if !output.status.success() {
+                return Err(Error::backend(format!(
+                    "failed to disable timer: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+
+            Ok(())
+        })
+    }
+
+    fn run_now<'a>(&'a self, schedule: &'a Schedule) -> BoxFuture<'a, Result<Run>> {
+        Box::pin(async move {
+            let service = self.service_name(schedule);
+            let output = self.systemctl(&["start", &service]).await?;
+
+            if !output.status.success() {
+                return Err(Error::backend(format!(
+                    "failed to start service: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+
+            let run = Run::new(schedule.id, true);
+            Ok(run)
+        })
+    }
+
+    fn is_running<'a>(&'a self, schedule: &'a Schedule) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            let service = self.service_name(schedule);
+            let output = self.systemctl(&["is-active", &service]).await?;
+
+            Ok(output.status.success())
+        })
+    }
+
+    fn get_runs<'a>(
+        &'a self,
+        schedule: &'a Schedule,
+        limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<Run>>> {
+        Box::pin(async move {
+            // Query journalctl for past runs
+            let service = self.service_name(schedule);
+            let _output = Command::new("journalctl")
+                .args([
+                    "--user",
+                    "-u",
+                    &service,
+                    "--output=json",
+                    "-n",
+                    &limit.to_string(),
+                ])
+                .output()
+                .await?;
+
+            // TODO: Parse journalctl JSON output into Run records
+            // For now, return empty vec - this needs proper implementation
+            Ok(Vec::new())
+        })
+    }
+
+    fn next_run<'a>(
+        &'a self,
+        schedule: &'a Schedule,
+    ) -> BoxFuture<'a, Result<Option<chrono::DateTime<chrono::Utc>>>> {
+        Box::pin(async move {
+            let timer = self.timer_name(schedule);
+            let output = self
+                .systemctl(&["show", &timer, "--property=NextElapseUSecRealtime"])
+                .await?;
+
+            if !output.status.success() {
+                return Ok(None);
+            }
+
+            let _stdout = String::from_utf8_lossy(&output.stdout);
+            // Parse "NextElapseUSecRealtime=..." format
+            // TODO: Implement proper parsing
+            Ok(None)
+        })
+    }
+
+    fn is_available(&self) -> bool {
+        is_available()
+    }
+}
+
+/// Checks if systemd is available on this system.
+pub fn is_available() -> bool {
+    std::process::Command::new("systemctl")
+        .arg("--user")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Converts a cron expression to systemd OnCalendar format.
+///
+/// Cron: minute hour day-of-month month day-of-week
+/// OnCalendar: DayOfWeek Year-Month-Day Hour:Minute:Second
+fn cron_to_oncalendar(cron_expr: &str) -> Result<String> {
+    let parts: Vec<&str> = cron_expr.split_whitespace().collect();
+    if parts.len() != 5 {
+        return Err(Error::InvalidCron(format!(
+            "expected 5 fields, got {}",
+            parts.len()
+        )));
+    }
+
+    let minute = parts[0];
+    let hour = parts[1];
+    let day = parts[2];
+    let month = parts[3];
+    let dow = parts[4];
+
+    // Build OnCalendar string
+    // Format: DayOfWeek Year-Month-Day Hour:Minute:Second
+    let mut calendar = String::new();
+
+    // Day of week
+    if dow != "*" {
+        calendar.push_str(&dow_to_systemd(dow));
+        calendar.push(' ');
+    }
+
+    // Date part: *-Month-Day
+    calendar.push_str("*-");
+    calendar.push_str(if month == "*" { "*" } else { month });
+    calendar.push('-');
+    calendar.push_str(if day == "*" { "*" } else { day });
+    calendar.push(' ');
+
+    // Time part: Hour:Minute:00
+    calendar.push_str(if hour == "*" { "*" } else { hour });
+    calendar.push(':');
+    calendar.push_str(if minute == "*" { "*" } else { minute });
+    calendar.push_str(":00");
+
+    Ok(calendar)
+}
+
+/// Converts cron day-of-week to systemd format.
+fn dow_to_systemd(dow: &str) -> String {
+    // Cron uses 0-6 (Sun-Sat) or names
+    // Systemd uses Mon, Tue, Wed, Thu, Fri, Sat, Sun
+    match dow {
+        "0" | "7" => "Sun".to_string(),
+        "1" => "Mon".to_string(),
+        "2" => "Tue".to_string(),
+        "3" => "Wed".to_string(),
+        "4" => "Thu".to_string(),
+        "5" => "Fri".to_string(),
+        "6" => "Sat".to_string(),
+        other => other.to_string(), // Pass through names or patterns
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cron_to_oncalendar() {
+        // Daily at 8am
+        assert_eq!(cron_to_oncalendar("0 8 * * *").unwrap(), "*-*-* 8:0:00");
+
+        // Every Monday at midnight
+        assert_eq!(cron_to_oncalendar("0 0 * * 1").unwrap(), "Mon *-*-* 0:0:00");
+
+        // First of every month at 2:30am
+        assert_eq!(cron_to_oncalendar("30 2 1 * *").unwrap(), "*-*-1 2:30:00");
+    }
+}
