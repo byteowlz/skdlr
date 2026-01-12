@@ -6,9 +6,9 @@ default:
 
 # === Development ===
 
-# Install all binaries
+# Install main CLI binary
 install:
-    cargo install --path .
+    cargo install --path crates/skdlr-cli
 
 # Install all binaries from workspace
 install-all:
