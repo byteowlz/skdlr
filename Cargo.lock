@@ -1657,7 +1657,7 @@ dependencies = [
 
 [[package]]
 name = "skdlr-api"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1674,7 +1674,7 @@ dependencies = [
 
 [[package]]
 name = "skdlr-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1692,7 +1692,7 @@ dependencies = [
 
 [[package]]
 name = "skdlr-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1714,7 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "skdlr-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "skdlr-tui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
