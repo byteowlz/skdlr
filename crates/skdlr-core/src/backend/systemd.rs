@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use chrono::{DateTime, Utc};
 use tokio::process::Command;
 
 use super::{Backend, BackendKind, BoxFuture};
@@ -197,17 +198,77 @@ impl Backend for SystemdBackend {
     fn run_now<'a>(&'a self, schedule: &'a Schedule) -> BoxFuture<'a, Result<Run>> {
         Box::pin(async move {
             let service = self.service_name(schedule);
+            let mut run = Run::new(schedule.id, true);
+
             let output = self.systemctl(&["start", &service]).await?;
 
             if !output.status.success() {
-                return Err(Error::backend(format!(
+                run.fail(format!(
                     "failed to start service: {}",
                     String::from_utf8_lossy(&output.stderr)
-                )));
+                ));
+                return Ok(run);
             }
 
-            let run = Run::new(schedule.id, true);
-            Ok(run)
+            // Wait for the service to complete (poll is-active)
+            // Oneshot services become inactive once done
+            let max_wait = std::time::Duration::from_secs(3600); // 1 hour max
+            let poll_interval = std::time::Duration::from_millis(500);
+            let start = std::time::Instant::now();
+
+            loop {
+                tokio::time::sleep(poll_interval).await;
+
+                let status = self.systemctl(&["is-active", &service]).await?;
+                let status_str = String::from_utf8_lossy(&status.stdout).trim().to_string();
+
+                match status_str.as_str() {
+                    "active" | "activating" => {
+                        // Still running, continue waiting
+                        if start.elapsed() > max_wait {
+                            // Timeout - return as still running
+                            return Ok(run);
+                        }
+                    }
+                    "inactive" => {
+                        // Completed - get the exit code from service status
+                        let result = self
+                            .systemctl(&["show", &service, "--property=ExecMainStatus"])
+                            .await?;
+                        let result_str = String::from_utf8_lossy(&result.stdout);
+
+                        let exit_code = result_str
+                            .trim()
+                            .strip_prefix("ExecMainStatus=")
+                            .and_then(|s| s.parse::<i32>().ok())
+                            .unwrap_or(0);
+
+                        run.complete(exit_code);
+                        return Ok(run);
+                    }
+                    "failed" => {
+                        // Get error info
+                        let result = self
+                            .systemctl(&["show", &service, "--property=ExecMainStatus"])
+                            .await?;
+                        let result_str = String::from_utf8_lossy(&result.stdout);
+
+                        let exit_code = result_str
+                            .trim()
+                            .strip_prefix("ExecMainStatus=")
+                            .and_then(|s| s.parse::<i32>().ok())
+                            .unwrap_or(1);
+
+                        run.complete(exit_code);
+                        return Ok(run);
+                    }
+                    _ => {
+                        // Unknown state (could be "unknown" if service doesn't exist)
+                        run.fail(format!("unexpected service state: {}", status_str));
+                        return Ok(run);
+                    }
+                }
+            }
         })
     }
 
@@ -249,7 +310,7 @@ impl Backend for SystemdBackend {
     fn next_run<'a>(
         &'a self,
         schedule: &'a Schedule,
-    ) -> BoxFuture<'a, Result<Option<chrono::DateTime<chrono::Utc>>>> {
+    ) -> BoxFuture<'a, Result<Option<DateTime<Utc>>>> {
         Box::pin(async move {
             let timer = self.timer_name(schedule);
             let output = self
@@ -257,13 +318,54 @@ impl Backend for SystemdBackend {
                 .await?;
 
             if !output.status.success() {
-                return Ok(None);
+                // Fall back to cron calculation if systemctl fails
+                return Ok(next_from_cron(&schedule.cron_expr));
             }
 
-            let _stdout = String::from_utf8_lossy(&output.stdout);
-            // Parse "NextElapseUSecRealtime=..." format
-            // TODO: Implement proper parsing
-            Ok(None)
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // Parse "NextElapseUSecRealtime=<timestamp>" format
+            // Example: "NextElapseUSecRealtime=Wed 2026-01-15 22:00:00 UTC"
+            if let Some(value) = stdout.trim().strip_prefix("NextElapseUSecRealtime=") {
+                if value.is_empty() || value == "n/a" {
+                    // Timer not active, fall back to cron calculation
+                    return Ok(next_from_cron(&schedule.cron_expr));
+                }
+
+                // Try parsing the systemd timestamp format
+                // Format: "Day YYYY-MM-DD HH:MM:SS TZ" or epoch microseconds
+                if let Ok(usec) = value.parse::<u64>() {
+                    // It's in microseconds since epoch
+                    let secs = (usec / 1_000_000) as i64;
+                    if let Some(dt) = DateTime::from_timestamp(secs, 0) {
+                        return Ok(Some(dt));
+                    }
+                }
+
+                // Try parsing as human-readable format (e.g., "Wed 2026-01-15 22:00:00 UTC")
+                // Skip the day name if present
+                let date_str = if value.contains(' ') {
+                    // Skip first word if it looks like a day name
+                    let parts: Vec<&str> = value.splitn(2, ' ').collect();
+                    if parts.len() == 2 && parts[0].len() <= 3 {
+                        parts[1]
+                    } else {
+                        value
+                    }
+                } else {
+                    value
+                };
+
+                // Parse "YYYY-MM-DD HH:MM:SS TZ" format
+                if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(
+                    date_str.trim_end_matches(" UTC").trim_end_matches(" Local"),
+                    "%Y-%m-%d %H:%M:%S",
+                ) {
+                    return Ok(Some(dt.and_utc()));
+                }
+            }
+
+            // Fall back to cron calculation if parsing fails
+            Ok(next_from_cron(&schedule.cron_expr))
         })
     }
 
@@ -280,6 +382,23 @@ pub fn is_available() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Calculates the next run time from a cron expression.
+fn next_from_cron(cron_expr: &str) -> Option<DateTime<Utc>> {
+    use cron::Schedule as CronSchedule;
+    use std::str::FromStr;
+
+    // Add seconds field if not present (cron crate expects 6 or 7 fields)
+    let expr = if cron_expr.split_whitespace().count() == 5 {
+        format!("0 {}", cron_expr)
+    } else {
+        cron_expr.to_string()
+    };
+
+    CronSchedule::from_str(&expr)
+        .ok()
+        .and_then(|sched| sched.upcoming(Utc).next())
 }
 
 /// Converts a cron expression to systemd OnCalendar format.

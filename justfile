@@ -161,3 +161,19 @@ release-tag VERSION:
 # Set up GitHub secrets for automated releases (requires byt)
 setup-secrets:
     byt secrets setup skdlr
+
+# === Issue Tracking (trx) ===
+trx-ready:
+    trx ready
+
+trx-create TITLE TYPE PRIORITY:
+    trx create "{{TITLE}}" -t {{TYPE}} -p {{PRIORITY}}
+
+trx-update ID STATUS:
+    trx update {{ID}} --status {{STATUS}}
+
+trx-close ID REASON:
+    trx close {{ID}} -r "{{REASON}}"
+
+trx-sync:
+    trx sync
