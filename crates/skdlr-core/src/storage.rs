@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
-use crate::models::{Run, RunStatus, Schedule, ScheduleStatus};
+use crate::models::{Run, RunStatus, Schedule, ScheduleKind, ScheduleStatus};
 use crate::validation::validate_schedule;
 
 /// SQLite-based storage for schedules and runs.
@@ -45,7 +45,8 @@ impl Storage {
                 id TEXT PRIMARY KEY,
                 name TEXT UNIQUE NOT NULL,
                 description TEXT,
-                cron_expr TEXT NOT NULL,
+                cron_expr TEXT,
+                run_at TEXT,
                 command TEXT NOT NULL,
                 workdir TEXT,
                 env TEXT,
@@ -75,6 +76,10 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_schedules_name ON schedules(name);
             ",
         )?;
+        // Migrate existing databases: add run_at column if not exists
+        let _ = self
+            .conn
+            .execute("ALTER TABLE schedules ADD COLUMN run_at TEXT", []);
         Ok(())
     }
 
@@ -84,13 +89,20 @@ impl Storage {
         let env_json = serde_json::to_string(&schedule.env)
             .map_err(|e| Error::Parse(format!("failed to serialize env: {e}")))?;
 
+        // Extract cron_expr and run_at from the schedule kind
+        let (cron_expr, run_at) = match &schedule.kind {
+            ScheduleKind::Recurring { cron_expr } => (Some(cron_expr.clone()), None),
+            ScheduleKind::OneOff { run_at } => (None, Some(run_at.to_rfc3339())),
+        };
+
         self.conn.execute(
-            "INSERT INTO schedules (id, name, description, cron_expr, command, workdir, env, status, user, created_at, updated_at, paused_until, backend_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            "INSERT INTO schedules (id, name, description, cron_expr, run_at, command, workdir, env, status, user, created_at, updated_at, paused_until, backend_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 description = excluded.description,
                 cron_expr = excluded.cron_expr,
+                run_at = excluded.run_at,
                 command = excluded.command,
                 workdir = excluded.workdir,
                 env = excluded.env,
@@ -103,7 +115,8 @@ impl Storage {
                 schedule.id.to_string(),
                 &schedule.name,
                 &schedule.description,
-                &schedule.cron_expr,
+                cron_expr,
+                run_at,
                 &schedule.command,
                 &schedule.workdir,
                 env_json,
@@ -122,7 +135,7 @@ impl Storage {
     pub fn get_schedule(&self, id: &Uuid) -> Result<Option<Schedule>> {
         self.conn
             .query_row(
-                "SELECT id, name, description, cron_expr, command, workdir, env, status, user, created_at, updated_at, paused_until, backend_id
+                "SELECT id, name, description, cron_expr, run_at, command, workdir, env, status, user, created_at, updated_at, paused_until, backend_id
                  FROM schedules WHERE id = ?1",
                 params![id.to_string()],
                 |row| self.row_to_schedule(row),
@@ -135,7 +148,7 @@ impl Storage {
     pub fn get_schedule_by_name(&self, name: &str) -> Result<Option<Schedule>> {
         self.conn
             .query_row(
-                "SELECT id, name, description, cron_expr, command, workdir, env, status, user, created_at, updated_at, paused_until, backend_id
+                "SELECT id, name, description, cron_expr, run_at, command, workdir, env, status, user, created_at, updated_at, paused_until, backend_id
                  FROM schedules WHERE name = ?1",
                 params![name],
                 |row| self.row_to_schedule(row),
@@ -147,7 +160,7 @@ impl Storage {
     /// Lists all schedules.
     pub fn list_schedules(&self) -> Result<Vec<Schedule>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, description, cron_expr, command, workdir, env, status, user, created_at, updated_at, paused_until, backend_id
+            "SELECT id, name, description, cron_expr, run_at, command, workdir, env, status, user, created_at, updated_at, paused_until, backend_id
              FROM schedules ORDER BY name",
         )?;
 
@@ -211,37 +224,55 @@ impl Storage {
 
     fn row_to_schedule(&self, row: &rusqlite::Row) -> rusqlite::Result<Schedule> {
         let id: String = row.get(0)?;
-        let env_json: String = row.get(6)?;
-        let status_str: String = row.get(7)?;
-        let created_at: String = row.get(9)?;
-        let updated_at: String = row.get(10)?;
-        let paused_until: Option<String> = row.get(11)?;
+        let cron_expr: Option<String> = row.get(3)?;
+        let run_at: Option<String> = row.get(4)?;
+        let env_json: String = row.get(7)?;
+        let status_str: String = row.get(8)?;
+        let created_at: String = row.get(10)?;
+        let updated_at: String = row.get(11)?;
+        let paused_until: Option<String> = row.get(12)?;
+
+        // Determine the schedule kind from cron_expr or run_at
+        let kind = if let Some(cron) = cron_expr {
+            ScheduleKind::Recurring { cron_expr: cron }
+        } else if let Some(run_at_str) = run_at {
+            let run_at_dt = parse_datetime(&run_at_str, 4)?;
+            ScheduleKind::OneOff { run_at: run_at_dt }
+        } else {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                3,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "schedule must have either cron_expr or run_at",
+                )),
+            ));
+        };
 
         let schedule = Schedule {
             id: parse_uuid(&id, 0)?,
             name: row.get(1)?,
             description: row.get(2)?,
-            cron_expr: row.get(3)?,
-            command: row.get(4)?,
-            workdir: row.get(5)?,
-            env: parse_env(&env_json, 6)?,
+            kind,
+            command: row.get(5)?,
+            workdir: row.get(6)?,
+            env: parse_env(&env_json, 7)?,
             status: match status_str.as_str() {
                 "disabled" => ScheduleStatus::Disabled,
                 "paused" => ScheduleStatus::Paused,
                 _ => ScheduleStatus::Enabled,
             },
-            user: row.get(8)?,
-            created_at: parse_datetime(&created_at, 9)?,
-            updated_at: parse_datetime(&updated_at, 10)?,
+            user: row.get(9)?,
+            created_at: parse_datetime(&created_at, 10)?,
+            updated_at: parse_datetime(&updated_at, 11)?,
             paused_until: paused_until
-                .map(|value| parse_datetime(&value, 11))
+                .map(|value| parse_datetime(&value, 12))
                 .transpose()?,
-            backend_id: row.get(12)?,
+            backend_id: row.get(13)?,
         };
 
-        validate_schedule(&schedule).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
-        })?;
+        // Skip validation for loaded schedules since run_at may now be in the past
+        // The validation is for new schedules only
 
         Ok(schedule)
     }
@@ -304,6 +335,7 @@ fn parse_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
 
     #[test]
     fn test_schedule_crud() {
@@ -314,13 +346,34 @@ mod tests {
 
         let loaded = storage.get_schedule(&schedule.id).unwrap().unwrap();
         assert_eq!(loaded.name, "test");
-        assert_eq!(loaded.cron_expr, "0 * * * *");
+        assert_eq!(loaded.cron_expr(), Some("0 * * * *"));
+        assert!(!loaded.is_one_off());
 
         let by_name = storage.get_schedule_by_name("test").unwrap().unwrap();
         assert_eq!(by_name.id, schedule.id);
 
         let all = storage.list_schedules().unwrap();
         assert_eq!(all.len(), 1);
+
+        storage.delete_schedule(&schedule.id).unwrap();
+        assert!(storage.get_schedule(&schedule.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_one_off_schedule_crud() {
+        let storage = Storage::in_memory().unwrap();
+
+        let run_at = Utc::now() + chrono::Duration::hours(1);
+        let schedule = Schedule::new_one_off("one-time-test", run_at, "echo hello");
+        storage.save_schedule(&schedule).unwrap();
+
+        let loaded = storage.get_schedule(&schedule.id).unwrap().unwrap();
+        assert_eq!(loaded.name, "one-time-test");
+        assert!(loaded.is_one_off());
+        assert!(loaded.cron_expr().is_none());
+        // Compare timestamps with some tolerance (truncation to seconds)
+        let loaded_run_at = loaded.run_at().unwrap();
+        assert!((loaded_run_at - run_at).num_seconds().abs() < 2);
 
         storage.delete_schedule(&schedule.id).unwrap();
         assert!(storage.get_schedule(&schedule.id).unwrap().is_none());

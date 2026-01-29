@@ -9,7 +9,7 @@ use tokio::process::Command as TokioCommand;
 use super::{Backend, BackendKind, BoxFuture};
 use crate::SkdlrConfig;
 use crate::error::Result;
-use crate::models::{Run, Schedule, ScheduleStatus};
+use crate::models::{Run, Schedule, ScheduleKind, ScheduleStatus};
 use crate::validation::validate_schedule;
 
 /// Internal scheduler backend.
@@ -58,6 +58,18 @@ impl InternalBackend {
         run
     }
 
+    /// Calculates the next run time based on schedule kind.
+    fn next_run_time(&self, kind: &ScheduleKind) -> Option<DateTime<Utc>> {
+        match kind {
+            ScheduleKind::Recurring { cron_expr } => self.next_from_cron(cron_expr),
+            ScheduleKind::OneOff { run_at } => {
+                // Return run_at if it's in the future
+                let now = Utc::now();
+                if *run_at > now { Some(*run_at) } else { None }
+            }
+        }
+    }
+
     /// Calculates the next run time from a cron expression.
     fn next_from_cron(&self, cron_expr: &str) -> Option<DateTime<Utc>> {
         use cron::Schedule as CronSchedule;
@@ -87,7 +99,7 @@ impl InternalBackend {
                 }
 
                 // Check if schedule should run now
-                if let Some(next) = self.next_from_cron(&schedule.cron_expr) {
+                if let Some(next) = self.next_run_time(&schedule.kind) {
                     let now = Utc::now();
                     let diff = (next - now).num_seconds().abs();
 
@@ -97,6 +109,19 @@ impl InternalBackend {
                         let run = self.execute_command(&schedule).await;
                         if let Err(e) = storage.save_run(&run) {
                             tracing::error!("Failed to save run: {}", e);
+                        }
+
+                        // For one-off schedules, disable after execution
+                        if schedule.is_one_off() {
+                            let mut updated = schedule.clone();
+                            updated.status = ScheduleStatus::Disabled;
+                            updated.updated_at = Utc::now();
+                            if let Err(e) = storage.save_schedule(&updated) {
+                                tracing::error!(
+                                    "Failed to disable one-off schedule after execution: {}",
+                                    e
+                                );
+                            }
                         }
                     }
                 }
@@ -181,7 +206,7 @@ impl Backend for InternalBackend {
         &'a self,
         schedule: &'a Schedule,
     ) -> BoxFuture<'a, Result<Option<DateTime<Utc>>>> {
-        Box::pin(async move { Ok(self.next_from_cron(&schedule.cron_expr)) })
+        Box::pin(async move { Ok(self.next_run_time(&schedule.kind)) })
     }
 
     fn is_available(&self) -> bool {

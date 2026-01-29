@@ -81,7 +81,7 @@ impl App {
         let schedules = storage
             .list_schedules()?
             .into_iter()
-            .map(|s| format!("{} - {} - {}", s.name, s.status, s.cron_expr))
+            .map(|s| format!("{} - {} - {}", s.name, s.status, s.kind))
             .collect();
 
         Ok(Self {

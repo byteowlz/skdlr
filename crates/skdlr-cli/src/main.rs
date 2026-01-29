@@ -8,9 +8,11 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
 use skdlr_core::backend::{Backend, BackendKind, create_backend};
-use skdlr_core::models::{Schedule, ScheduleStatus};
+use skdlr_core::models::{Schedule, ScheduleKind, ScheduleStatus};
 use skdlr_core::paths::AppPaths;
-use skdlr_core::validation::{validate_cron_expression, validate_schedule, validate_schedule_name};
+use skdlr_core::validation::{
+    validate_cron_expression, validate_run_at, validate_schedule, validate_schedule_name,
+};
 use skdlr_core::{SkdlrConfig, Storage};
 
 #[tokio::main]
@@ -123,9 +125,16 @@ struct AddCommand {
     /// Schedule name (used as identifier)
     name: String,
 
-    /// Cron expression (e.g., "0 8 * * *" for daily at 8am)
-    #[arg(short, long)]
-    schedule: String,
+    /// Schedule timing. Supports natural language like "every day at 9am", "hourly",
+    /// "every monday at 8am", "weekly", or cron format "0 8 * * *". Mutually exclusive with --at.
+    #[arg(short, long, conflicts_with = "at")]
+    schedule: Option<String>,
+
+    /// One-off run at specific time. Supports natural language like "tomorrow 9am",
+    /// "in 2 hours", "next monday 14:00", "friday 3pm", or ISO format "2026-02-13 08:00".
+    /// Mutually exclusive with --schedule.
+    #[arg(long, conflicts_with = "schedule")]
+    at: Option<String>,
 
     /// Command to execute
     #[arg(short, long)]
@@ -162,9 +171,15 @@ struct EditCommand {
     /// Schedule name
     name: String,
 
-    /// New cron expression
-    #[arg(short, long)]
+    /// New schedule timing (only for recurring schedules). Supports natural language
+    /// like "every day at 9am" or cron format. Mutually exclusive with --at.
+    #[arg(short, long, conflicts_with = "at")]
     schedule: Option<String>,
+
+    /// New one-off timestamp (only for one-off schedules). Supports natural language
+    /// like "tomorrow 9am" or ISO format. Mutually exclusive with --schedule.
+    #[arg(long, conflicts_with = "schedule")]
+    at: Option<String>,
 
     /// New command
     #[arg(short, long)]
@@ -228,11 +243,29 @@ async fn handle_add(
         anyhow::bail!("schedule '{}' already exists", cmd.name);
     }
 
-    // Validate cron expression
-    validate_cron_expression(&cmd.schedule)?;
+    // Create schedule based on --schedule (cron) or --at (one-off)
+    let mut schedule = match (&cmd.schedule, &cmd.at) {
+        (Some(schedule_str), None) => {
+            // Recurring schedule - try natural language first, then cron
+            let cron_expr = parse_schedule_input(schedule_str)?;
+            validate_cron_expression(&cron_expr)?;
+            Schedule::new(&cmd.name, &cron_expr, &cmd.command)
+        }
+        (None, Some(at_str)) => {
+            // One-off schedule with timestamp
+            let run_at = parse_datetime_input(at_str)?;
+            validate_run_at(run_at)?;
+            Schedule::new_one_off(&cmd.name, run_at, &cmd.command)
+        }
+        (None, None) => {
+            anyhow::bail!("either --schedule or --at must be specified");
+        }
+        (Some(_), Some(_)) => {
+            // This should be prevented by clap's conflicts_with, but handle it anyway
+            anyhow::bail!("--schedule and --at are mutually exclusive");
+        }
+    };
 
-    // Create schedule
-    let mut schedule = Schedule::new(&cmd.name, &cmd.schedule, &cmd.command);
     if let Some(workdir) = cmd.workdir {
         schedule = schedule.with_workdir(workdir);
     }
@@ -255,8 +288,577 @@ async fn handle_add(
         backend.enable(&schedule).await?;
     }
 
-    println!("Created schedule '{}'", cmd.name);
+    let schedule_type = if schedule.is_one_off() {
+        "one-off"
+    } else {
+        "recurring"
+    };
+    println!("Created {} schedule '{}'", schedule_type, cmd.name);
     Ok(())
+}
+
+/// Parses a datetime string in various formats, including natural language.
+fn parse_datetime_input(input: &str) -> Result<chrono::DateTime<chrono::Utc>> {
+    use chrono::{Local, TimeZone};
+
+    let input_lower = input.to_lowercase();
+    let input_trimmed = input_lower.trim();
+
+    // Try natural language patterns first
+    if let Some(dt) = parse_natural_datetime(input_trimmed) {
+        return Ok(dt);
+    }
+
+    // Try RFC3339 format (e.g., "2026-02-13T08:00:00Z")
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(input) {
+        return Ok(dt.with_timezone(&chrono::Utc));
+    }
+
+    // Try common formats
+    let formats = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+    ];
+
+    for fmt in formats {
+        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(input, fmt) {
+            // Assume local time, convert to UTC
+            if let Some(local) = Local.from_local_datetime(&naive).single() {
+                return Ok(local.with_timezone(&chrono::Utc));
+            }
+        }
+    }
+
+    // Try "tomorrow 8am", "monday 14:00", etc. with date and time parts
+    if let Some(dt) = parse_date_with_time(input_trimmed) {
+        return Ok(dt);
+    }
+
+    anyhow::bail!(
+        "invalid datetime format: '{}'. Examples:\n  \
+         - Natural: 'tomorrow 9am', 'in 2 hours', 'next monday 14:00', 'friday 3pm'\n  \
+         - ISO 8601: '2026-02-13 08:00' or '2026-02-13T08:00:00Z'",
+        input
+    )
+}
+
+/// Parses natural language datetime expressions.
+fn parse_natural_datetime(input: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::{Duration, Local, TimeZone, Timelike};
+
+    let now = Local::now();
+
+    // Handle "in X minutes/hours/days"
+    if input.starts_with("in ") {
+        let rest = &input[3..];
+        if let Some(dt) = parse_relative_duration(rest, now) {
+            return Some(dt.with_timezone(&chrono::Utc));
+        }
+    }
+
+    // Handle "X minutes/hours/days from now"
+    if input.ends_with(" from now") {
+        let rest = &input[..input.len() - 9];
+        if let Some(dt) = parse_relative_duration(rest, now) {
+            return Some(dt.with_timezone(&chrono::Utc));
+        }
+    }
+
+    // Handle simple keywords without time
+    match input {
+        "now" => return Some(now.with_timezone(&chrono::Utc)),
+        "midnight" | "tonight" => {
+            let tomorrow = now.date_naive() + Duration::days(1);
+            let dt = tomorrow.and_hms_opt(0, 0, 0)?;
+            return Local
+                .from_local_datetime(&dt)
+                .single()
+                .map(|d| d.with_timezone(&chrono::Utc));
+        }
+        "noon" => {
+            let mut target = now.date_naive().and_hms_opt(12, 0, 0)?;
+            if now.hour() >= 12 {
+                target = (now.date_naive() + Duration::days(1)).and_hms_opt(12, 0, 0)?;
+            }
+            return Local
+                .from_local_datetime(&target)
+                .single()
+                .map(|d| d.with_timezone(&chrono::Utc));
+        }
+        _ => {}
+    }
+
+    None
+}
+
+/// Parses relative duration like "2 hours", "30 minutes", "1 day"
+fn parse_relative_duration(
+    input: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> Option<chrono::DateTime<chrono::Local>> {
+    use chrono::Duration;
+
+    let parts: Vec<&str> = input.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let amount: i64 = parts[0].parse().ok()?;
+    let unit = parts[1].trim_end_matches('s'); // Handle plural
+
+    let duration = match unit {
+        "minute" | "min" => Duration::minutes(amount),
+        "hour" | "hr" => Duration::hours(amount),
+        "day" => Duration::days(amount),
+        "week" => Duration::weeks(amount),
+        _ => return None,
+    };
+
+    Some(now + duration)
+}
+
+/// Parses date with optional time like "tomorrow 9am", "monday 14:00", "next friday 3pm"
+fn parse_date_with_time(input: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::{Datelike, Duration, Local, NaiveTime, TimeZone};
+
+    let now = Local::now();
+    let parts: Vec<&str> = input.split_whitespace().collect();
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    // Check for "next" prefix
+    let (has_next, date_parts) = if parts[0] == "next" {
+        (true, &parts[1..])
+    } else {
+        (false, &parts[..])
+    };
+
+    if date_parts.is_empty() {
+        return None;
+    }
+
+    // Parse the date part
+    let (target_date, time_idx) = match date_parts[0] {
+        "today" => (now.date_naive(), 1),
+        "tomorrow" => (now.date_naive() + Duration::days(1), 1),
+        day_name => {
+            if let Some(weekday) = parse_weekday(day_name) {
+                let days_ahead = days_until_weekday(now.weekday(), weekday, has_next);
+                (now.date_naive() + Duration::days(days_ahead), 1)
+            } else {
+                return None;
+            }
+        }
+    };
+
+    // Parse the time part (if provided)
+    let time = if time_idx < date_parts.len() {
+        parse_time_string(date_parts[time_idx])?
+    } else {
+        // Default to 9:00 AM if no time specified
+        NaiveTime::from_hms_opt(9, 0, 0)?
+    };
+
+    let naive_dt = target_date.and_time(time);
+    Local
+        .from_local_datetime(&naive_dt)
+        .single()
+        .map(|d| d.with_timezone(&chrono::Utc))
+}
+
+/// Parses weekday names
+fn parse_weekday(s: &str) -> Option<chrono::Weekday> {
+    use chrono::Weekday;
+    match s {
+        "monday" | "mon" => Some(Weekday::Mon),
+        "tuesday" | "tue" | "tues" => Some(Weekday::Tue),
+        "wednesday" | "wed" => Some(Weekday::Wed),
+        "thursday" | "thu" | "thur" | "thurs" => Some(Weekday::Thu),
+        "friday" | "fri" => Some(Weekday::Fri),
+        "saturday" | "sat" => Some(Weekday::Sat),
+        "sunday" | "sun" => Some(Weekday::Sun),
+        _ => None,
+    }
+}
+
+/// Calculates days until a target weekday
+fn days_until_weekday(current: chrono::Weekday, target: chrono::Weekday, next_week: bool) -> i64 {
+    let current_num = current.num_days_from_monday() as i64;
+    let target_num = target.num_days_from_monday() as i64;
+
+    let mut days = target_num - current_num;
+
+    if days <= 0 || next_week {
+        days += 7;
+    }
+
+    days
+}
+
+/// Parses time strings like "9am", "14:00", "3:30pm", "9:00"
+fn parse_time_string(s: &str) -> Option<chrono::NaiveTime> {
+    use chrono::NaiveTime;
+
+    let s = s.to_lowercase();
+
+    // Check for am/pm suffix
+    let (time_part, is_pm) = if s.ends_with("am") {
+        (&s[..s.len() - 2], false)
+    } else if s.ends_with("pm") {
+        (&s[..s.len() - 2], true)
+    } else {
+        (s.as_str(), false)
+    };
+
+    // Parse hour and optional minute
+    let (hour, minute) = if time_part.contains(':') {
+        let parts: Vec<&str> = time_part.split(':').collect();
+        if parts.len() != 2 {
+            return None;
+        }
+        (parts[0].parse::<u32>().ok()?, parts[1].parse::<u32>().ok()?)
+    } else {
+        (time_part.parse::<u32>().ok()?, 0)
+    };
+
+    // Adjust for PM
+    let hour = if is_pm && hour < 12 {
+        hour + 12
+    } else if !is_pm && hour == 12 && s.ends_with("am") {
+        0
+    } else {
+        hour
+    };
+
+    NaiveTime::from_hms_opt(hour, minute, 0)
+}
+
+/// Parses a schedule string into a cron expression.
+/// Supports natural language like "every day at 9am", "hourly", "every monday at 8am".
+fn parse_schedule_input(input: &str) -> Result<String> {
+    let input_lower = input.to_lowercase();
+    let input_trimmed = input_lower.trim();
+
+    // Try natural language first
+    if let Some(cron) = parse_natural_schedule(input_trimmed) {
+        return Ok(cron);
+    }
+
+    // Check if it looks like a valid cron expression (5 space-separated fields)
+    if input.split_whitespace().count() == 5 {
+        return Ok(input.to_string());
+    }
+
+    anyhow::bail!(
+        "invalid schedule format: '{}'. Examples:\n  \
+         - Natural: 'every day at 9am', 'hourly', 'every monday at 14:00', 'weekly on friday'\n  \
+         - Cron: '0 9 * * *' (minute hour day month weekday)",
+        input
+    )
+}
+
+/// Parses natural language schedule expressions into cron format.
+fn parse_natural_schedule(input: &str) -> Option<String> {
+    // Simple frequency keywords
+    match input {
+        "hourly" | "every hour" => return Some("0 * * * *".to_string()),
+        "daily" | "every day" => return Some("0 9 * * *".to_string()), // Default to 9am
+        "weekly" | "every week" => return Some("0 9 * * 1".to_string()), // Monday 9am
+        "monthly" | "every month" => return Some("0 9 1 * *".to_string()), // 1st of month 9am
+        "yearly" | "annually" | "every year" => return Some("0 9 1 1 *".to_string()), // Jan 1st 9am
+        "midnight" | "every midnight" | "daily at midnight" => {
+            return Some("0 0 * * *".to_string());
+        }
+        "noon" | "every noon" | "daily at noon" => return Some("0 12 * * *".to_string()),
+        _ => {}
+    }
+
+    // "every X minutes/hours"
+    if input.starts_with("every ") {
+        let rest = &input[6..];
+
+        // "every N minutes"
+        if let Some(cron) = parse_every_interval(rest) {
+            return Some(cron);
+        }
+
+        // "every day at TIME"
+        if let Some(rest) = rest.strip_prefix("day at ") {
+            if let Some(time) = parse_time_string(rest) {
+                return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
+            }
+        }
+        if let Some(rest) = rest.strip_prefix("day ") {
+            if let Some(time) = parse_time_string(rest) {
+                return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
+            }
+        }
+
+        // "every monday/tuesday/etc [at TIME]"
+        if let Some(cron) = parse_every_weekday(rest) {
+            return Some(cron);
+        }
+
+        // "every month on DAY [at TIME]" or "every month at TIME"
+        if let Some(cron) = parse_every_month(rest) {
+            return Some(cron);
+        }
+    }
+
+    // "daily at TIME"
+    if let Some(rest) = input.strip_prefix("daily at ") {
+        if let Some(time) = parse_time_string(rest) {
+            return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
+        }
+    }
+    if let Some(rest) = input.strip_prefix("daily ") {
+        if let Some(time) = parse_time_string(rest) {
+            return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
+        }
+    }
+
+    // "weekly on DAY [at TIME]"
+    if let Some(rest) = input.strip_prefix("weekly on ") {
+        return parse_weekly_on(rest);
+    }
+    if let Some(rest) = input.strip_prefix("weekly ") {
+        return parse_weekly_on(rest);
+    }
+
+    // "weekdays at TIME" or "weekdays TIME"
+    if let Some(rest) = input.strip_prefix("weekdays at ") {
+        if let Some(time) = parse_time_string(rest) {
+            return Some(format!(
+                "{} {} * * 1-5",
+                time.format("%M"),
+                time.format("%H")
+            ));
+        }
+    }
+    if let Some(rest) = input.strip_prefix("weekdays ") {
+        if let Some(time) = parse_time_string(rest) {
+            return Some(format!(
+                "{} {} * * 1-5",
+                time.format("%M"),
+                time.format("%H")
+            ));
+        }
+    }
+    if input == "weekdays" {
+        return Some("0 9 * * 1-5".to_string());
+    }
+
+    // "weekends at TIME"
+    if let Some(rest) = input.strip_prefix("weekends at ") {
+        if let Some(time) = parse_time_string(rest) {
+            return Some(format!(
+                "{} {} * * 0,6",
+                time.format("%M"),
+                time.format("%H")
+            ));
+        }
+    }
+    if let Some(rest) = input.strip_prefix("weekends ") {
+        if let Some(time) = parse_time_string(rest) {
+            return Some(format!(
+                "{} {} * * 0,6",
+                time.format("%M"),
+                time.format("%H")
+            ));
+        }
+    }
+    if input == "weekends" {
+        return Some("0 9 * * 0,6".to_string());
+    }
+
+    // Just a weekday name with optional time: "monday 9am" or "monday at 9am"
+    let parts: Vec<&str> = input.split_whitespace().collect();
+    if !parts.is_empty() {
+        if let Some(dow) = weekday_to_cron(parts[0]) {
+            let time = if parts.len() > 1 {
+                let time_str = if parts.len() > 2 && parts[1] == "at" {
+                    parts[2]
+                } else {
+                    parts[1]
+                };
+                parse_time_string(time_str)
+                    .unwrap_or_else(|| chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap())
+            } else {
+                chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap()
+            };
+            return Some(format!(
+                "{} {} * * {}",
+                time.format("%M"),
+                time.format("%H"),
+                dow
+            ));
+        }
+    }
+
+    None
+}
+
+/// Parses "N minutes" or "N hours" into cron
+fn parse_every_interval(input: &str) -> Option<String> {
+    let parts: Vec<&str> = input.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let amount: u32 = parts[0].parse().ok()?;
+    let unit = parts[1].trim_end_matches('s');
+
+    match unit {
+        "minute" | "min" => {
+            if amount > 0 && 60 % amount == 0 {
+                Some(format!("*/{} * * * *", amount))
+            } else {
+                Some(format!("*/{} * * * *", amount))
+            }
+        }
+        "hour" | "hr" => {
+            if amount > 0 && 24 % amount == 0 {
+                Some(format!("0 */{} * * *", amount))
+            } else {
+                Some(format!("0 */{} * * *", amount))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Parses "monday [at TIME]", "tuesday 9am", etc.
+fn parse_every_weekday(input: &str) -> Option<String> {
+    let parts: Vec<&str> = input.split_whitespace().collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let dow = weekday_to_cron(parts[0])?;
+
+    let time = if parts.len() > 1 {
+        let time_str = if parts.len() > 2 && parts[1] == "at" {
+            parts[2]
+        } else {
+            parts[1]
+        };
+        parse_time_string(time_str)?
+    } else {
+        chrono::NaiveTime::from_hms_opt(9, 0, 0)?
+    };
+
+    Some(format!(
+        "{} {} * * {}",
+        time.format("%M"),
+        time.format("%H"),
+        dow
+    ))
+}
+
+/// Parses "month on DAY [at TIME]" or "month at TIME"
+fn parse_every_month(input: &str) -> Option<String> {
+    let input = input.strip_prefix("month ")?.trim();
+
+    // "on the 1st at 9am" or "on 15 at 9am"
+    if let Some(rest) = input.strip_prefix("on the ") {
+        return parse_month_day_time(rest);
+    }
+    if let Some(rest) = input.strip_prefix("on ") {
+        return parse_month_day_time(rest);
+    }
+
+    // "at TIME" - default to 1st of month
+    if let Some(rest) = input.strip_prefix("at ") {
+        if let Some(time) = parse_time_string(rest) {
+            return Some(format!("{} {} 1 * *", time.format("%M"), time.format("%H")));
+        }
+    }
+
+    None
+}
+
+/// Parses "15 at 9am" or "1st at noon"
+fn parse_month_day_time(input: &str) -> Option<String> {
+    let parts: Vec<&str> = input.split_whitespace().collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    // Parse day, stripping ordinal suffixes
+    let day_str = parts[0]
+        .trim_end_matches("st")
+        .trim_end_matches("nd")
+        .trim_end_matches("rd")
+        .trim_end_matches("th");
+    let day: u32 = day_str.parse().ok()?;
+
+    if day < 1 || day > 31 {
+        return None;
+    }
+
+    let time = if parts.len() > 1 {
+        let time_str = if parts.len() > 2 && parts[1] == "at" {
+            parts[2]
+        } else {
+            parts[1]
+        };
+        parse_time_string(time_str)?
+    } else {
+        chrono::NaiveTime::from_hms_opt(9, 0, 0)?
+    };
+
+    Some(format!(
+        "{} {} {} * *",
+        time.format("%M"),
+        time.format("%H"),
+        day
+    ))
+}
+
+/// Parses "friday at 9am" or "friday 9am" for weekly schedules
+fn parse_weekly_on(input: &str) -> Option<String> {
+    let parts: Vec<&str> = input.split_whitespace().collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let dow = weekday_to_cron(parts[0])?;
+
+    let time = if parts.len() > 1 {
+        let time_str = if parts.len() > 2 && parts[1] == "at" {
+            parts[2]
+        } else {
+            parts[1]
+        };
+        parse_time_string(time_str)?
+    } else {
+        chrono::NaiveTime::from_hms_opt(9, 0, 0)?
+    };
+
+    Some(format!(
+        "{} {} * * {}",
+        time.format("%M"),
+        time.format("%H"),
+        dow
+    ))
+}
+
+/// Converts weekday name to cron day-of-week number
+fn weekday_to_cron(s: &str) -> Option<&'static str> {
+    match s {
+        "sunday" | "sun" => Some("0"),
+        "monday" | "mon" => Some("1"),
+        "tuesday" | "tue" | "tues" => Some("2"),
+        "wednesday" | "wed" => Some("3"),
+        "thursday" | "thu" | "thur" | "thurs" => Some("4"),
+        "friday" | "fri" => Some("5"),
+        "saturday" | "sat" => Some("6"),
+        _ => None,
+    }
 }
 
 fn handle_list(storage: &Storage, _cmd: ListCommand) -> Result<()> {
@@ -267,17 +869,27 @@ fn handle_list(storage: &Storage, _cmd: ListCommand) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<20} {:<10} {:<20} COMMAND", "NAME", "STATUS", "SCHEDULE");
-    println!("{}", "-".repeat(70));
+    println!(
+        "{:<20} {:<10} {:<6} {:<24} COMMAND",
+        "NAME", "STATUS", "TYPE", "SCHEDULE"
+    );
+    println!("{}", "-".repeat(85));
 
     for schedule in schedules {
-        let cmd_preview: String = schedule.command.chars().take(30).collect();
+        let cmd_preview: String = schedule.command.chars().take(25).collect();
+        let (sched_type, sched_display) = match &schedule.kind {
+            ScheduleKind::Recurring { cron_expr } => ("cron", cron_expr.clone()),
+            ScheduleKind::OneOff { run_at } => {
+                ("once", run_at.format("%Y-%m-%d %H:%M UTC").to_string())
+            }
+        };
         println!(
-            "{:<20} {:<10} {:<20} {}",
+            "{:<20} {:<10} {:<6} {:<24} {}",
             schedule.name,
             schedule.status,
-            schedule.cron_expr,
-            if schedule.command.len() > 30 {
+            sched_type,
+            sched_display,
+            if schedule.command.len() > 25 {
                 format!("{}...", cmd_preview)
             } else {
                 cmd_preview
@@ -295,7 +907,16 @@ fn handle_show(storage: &Storage, cmd: ShowCommand) -> Result<()> {
 
     println!("Name:        {}", schedule.name);
     println!("Status:      {}", schedule.status);
-    println!("Schedule:    {}", schedule.cron_expr);
+    match &schedule.kind {
+        ScheduleKind::Recurring { cron_expr } => {
+            println!("Type:        recurring (cron)");
+            println!("Schedule:    {}", cron_expr);
+        }
+        ScheduleKind::OneOff { run_at } => {
+            println!("Type:        one-off");
+            println!("Run at:      {}", run_at.format("%Y-%m-%d %H:%M:%S UTC"));
+        }
+    }
     println!("Command:     {}", schedule.command);
     if let Some(workdir) = &schedule.workdir {
         println!("Working dir: {}", workdir);
@@ -316,9 +937,27 @@ async fn handle_edit(storage: &Storage, backend: &dyn Backend, cmd: EditCommand)
 
     let mut changed = false;
 
-    if let Some(cron) = cmd.schedule {
-        validate_cron_expression(&cron)?;
-        schedule.cron_expr = cron;
+    // Handle schedule timing changes
+    if let Some(schedule_str) = cmd.schedule {
+        if schedule.is_one_off() {
+            anyhow::bail!(
+                "cannot set cron expression on a one-off schedule; use --at to change the run time"
+            );
+        }
+        let cron_expr = parse_schedule_input(&schedule_str)?;
+        validate_cron_expression(&cron_expr)?;
+        schedule.kind = ScheduleKind::Recurring { cron_expr };
+        changed = true;
+    }
+    if let Some(at_str) = cmd.at {
+        if !schedule.is_one_off() {
+            anyhow::bail!(
+                "cannot set run time on a recurring schedule; use --schedule to change the cron expression"
+            );
+        }
+        let run_at = parse_datetime_input(&at_str)?;
+        validate_run_at(run_at)?;
+        schedule.kind = ScheduleKind::OneOff { run_at };
         changed = true;
     }
     if let Some(command) = cmd.command {

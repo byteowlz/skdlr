@@ -1,7 +1,9 @@
 //! Validation helpers for schedules and user input.
 
+use chrono::{DateTime, Utc};
+
 use crate::error::{Error, Result};
-use crate::models::Schedule;
+use crate::models::{Schedule, ScheduleKind};
 
 /// Validates a schedule name for safe use in backend identifiers and paths.
 pub fn validate_schedule_name(name: &str) -> Result<()> {
@@ -45,10 +47,29 @@ pub fn validate_cron_expression(expr: &str) -> Result<()> {
         .map_err(|e| Error::InvalidCron(e.to_string()))
 }
 
+/// Validates a one-off run_at timestamp.
+pub fn validate_run_at(run_at: DateTime<Utc>) -> Result<()> {
+    let now = Utc::now();
+    if run_at <= now {
+        return Err(Error::Validation(
+            "one-off schedule run_at must be in the future".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Validates the schedule kind (cron or one-off timestamp).
+pub fn validate_schedule_kind(kind: &ScheduleKind) -> Result<()> {
+    match kind {
+        ScheduleKind::Recurring { cron_expr } => validate_cron_expression(cron_expr),
+        ScheduleKind::OneOff { run_at } => validate_run_at(*run_at),
+    }
+}
+
 /// Validates schedule fields used in backend files.
 pub fn validate_schedule(schedule: &Schedule) -> Result<()> {
     validate_schedule_name(&schedule.name)?;
-    validate_cron_expression(&schedule.cron_expr)?;
+    validate_schedule_kind(&schedule.kind)?;
 
     reject_controls("command", &schedule.command)?;
 

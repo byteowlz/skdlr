@@ -16,7 +16,7 @@ pub mod validation;
 
 pub use config::SkdlrConfig;
 pub use error::{Error, Result};
-pub use models::{Run, RunStatus, Schedule, ScheduleStatus};
+pub use models::{Run, RunStatus, Schedule, ScheduleKind, ScheduleStatus};
 pub use storage::Storage;
 
 /// Application name used for config directories and environment prefix.

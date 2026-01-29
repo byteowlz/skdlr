@@ -11,7 +11,7 @@ use tokio::process::Command;
 use super::{Backend, BackendKind, BoxFuture};
 use crate::SkdlrConfig;
 use crate::error::{Error, Result};
-use crate::models::{Run, Schedule};
+use crate::models::{Run, Schedule, ScheduleKind};
 use crate::validation::validate_schedule;
 
 /// Systemd backend for Linux.
@@ -82,24 +82,49 @@ impl SystemdBackend {
 
     /// Generates the timer unit file content.
     fn generate_timer(&self, schedule: &Schedule) -> Result<String> {
-        // Convert cron expression to systemd OnCalendar format
-        let on_calendar = cron_to_oncalendar(&schedule.cron_expr)?;
+        match &schedule.kind {
+            ScheduleKind::Recurring { cron_expr } => {
+                // Convert cron expression to systemd OnCalendar format
+                let on_calendar = cron_to_oncalendar(cron_expr)?;
 
-        Ok(format!(
-            "[Unit]\n\
-             Description=Timer for skdlr: {}\n\
-             Requires={}\n\
-             \n\
-             [Timer]\n\
-             OnCalendar={}\n\
-             Persistent=true\n\
-             \n\
-             [Install]\n\
-             WantedBy=timers.target\n",
-            schedule.name,
-            self.service_name(schedule),
-            on_calendar,
-        ))
+                Ok(format!(
+                    "[Unit]\n\
+                     Description=Timer for skdlr: {}\n\
+                     Requires={}\n\
+                     \n\
+                     [Timer]\n\
+                     OnCalendar={}\n\
+                     Persistent=true\n\
+                     \n\
+                     [Install]\n\
+                     WantedBy=timers.target\n",
+                    schedule.name,
+                    self.service_name(schedule),
+                    on_calendar,
+                ))
+            }
+            ScheduleKind::OneOff { run_at } => {
+                // Convert timestamp to systemd OnCalendar format
+                // Format: YYYY-MM-DD HH:MM:SS
+                let on_calendar = run_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
+
+                Ok(format!(
+                    "[Unit]\n\
+                     Description=One-off timer for skdlr: {}\n\
+                     Requires={}\n\
+                     \n\
+                     [Timer]\n\
+                     OnCalendar={}\n\
+                     Persistent=false\n\
+                     \n\
+                     [Install]\n\
+                     WantedBy=timers.target\n",
+                    schedule.name,
+                    self.service_name(schedule),
+                    on_calendar,
+                ))
+            }
+        }
     }
 
     /// Runs systemctl with the given arguments.
@@ -318,8 +343,8 @@ impl Backend for SystemdBackend {
                 .await?;
 
             if !output.status.success() {
-                // Fall back to cron calculation if systemctl fails
-                return Ok(next_from_cron(&schedule.cron_expr));
+                // Fall back to schedule-based calculation if systemctl fails
+                return Ok(next_from_schedule(&schedule.kind));
             }
 
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -327,8 +352,8 @@ impl Backend for SystemdBackend {
             // Example: "NextElapseUSecRealtime=Wed 2026-01-15 22:00:00 UTC"
             if let Some(value) = stdout.trim().strip_prefix("NextElapseUSecRealtime=") {
                 if value.is_empty() || value == "n/a" {
-                    // Timer not active, fall back to cron calculation
-                    return Ok(next_from_cron(&schedule.cron_expr));
+                    // Timer not active, fall back to schedule-based calculation
+                    return Ok(next_from_schedule(&schedule.kind));
                 }
 
                 // Try parsing the systemd timestamp format
@@ -364,8 +389,8 @@ impl Backend for SystemdBackend {
                 }
             }
 
-            // Fall back to cron calculation if parsing fails
-            Ok(next_from_cron(&schedule.cron_expr))
+            // Fall back to schedule-based calculation if parsing fails
+            Ok(next_from_schedule(&schedule.kind))
         })
     }
 
@@ -382,6 +407,18 @@ pub fn is_available() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Calculates the next run time from a schedule kind.
+fn next_from_schedule(kind: &ScheduleKind) -> Option<DateTime<Utc>> {
+    match kind {
+        ScheduleKind::Recurring { cron_expr } => next_from_cron(cron_expr),
+        ScheduleKind::OneOff { run_at } => {
+            // Return the run_at time if it's in the future, otherwise None
+            let now = Utc::now();
+            if *run_at > now { Some(*run_at) } else { None }
+        }
+    }
 }
 
 /// Calculates the next run time from a cron expression.

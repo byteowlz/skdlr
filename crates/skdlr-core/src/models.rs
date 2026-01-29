@@ -4,6 +4,76 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// The kind of schedule: recurring (cron) or one-off (timestamp).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ScheduleKind {
+    /// Recurring schedule using a cron expression.
+    Recurring {
+        /// Cron expression (e.g., "0 8 * * *" for daily at 8am).
+        cron_expr: String,
+    },
+    /// One-off schedule that runs at a specific timestamp.
+    OneOff {
+        /// The timestamp when the task should run.
+        run_at: DateTime<Utc>,
+    },
+}
+
+impl ScheduleKind {
+    /// Creates a recurring schedule kind from a cron expression.
+    pub fn recurring(cron_expr: impl Into<String>) -> Self {
+        Self::Recurring {
+            cron_expr: cron_expr.into(),
+        }
+    }
+
+    /// Creates a one-off schedule kind for a specific timestamp.
+    pub fn one_off(run_at: DateTime<Utc>) -> Self {
+        Self::OneOff { run_at }
+    }
+
+    /// Returns the cron expression if this is a recurring schedule.
+    pub fn cron_expr(&self) -> Option<&str> {
+        match self {
+            Self::Recurring { cron_expr } => Some(cron_expr),
+            Self::OneOff { .. } => None,
+        }
+    }
+
+    /// Returns the run_at timestamp if this is a one-off schedule.
+    pub fn run_at(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Self::Recurring { .. } => None,
+            Self::OneOff { run_at } => Some(*run_at),
+        }
+    }
+
+    /// Returns true if this is a one-off schedule.
+    pub fn is_one_off(&self) -> bool {
+        matches!(self, Self::OneOff { .. })
+    }
+
+    /// Returns true if this is a recurring schedule.
+    pub fn is_recurring(&self) -> bool {
+        matches!(self, Self::Recurring { .. })
+    }
+
+    /// Returns a display string for this schedule kind.
+    pub fn display(&self) -> String {
+        match self {
+            Self::Recurring { cron_expr } => cron_expr.clone(),
+            Self::OneOff { run_at } => format!("@{}", run_at.format("%Y-%m-%d %H:%M:%S UTC")),
+        }
+    }
+}
+
+impl std::fmt::Display for ScheduleKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.display())
+    }
+}
+
 /// A scheduled task definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Schedule {
@@ -16,8 +86,8 @@ pub struct Schedule {
     /// Optional description.
     pub description: Option<String>,
 
-    /// Cron expression (e.g., "0 8 * * *" for daily at 8am).
-    pub cron_expr: String,
+    /// The schedule timing (cron expression or one-off timestamp).
+    pub kind: ScheduleKind,
 
     /// Command to execute.
     pub command: String,
@@ -49,7 +119,7 @@ pub struct Schedule {
 }
 
 impl Schedule {
-    /// Creates a new schedule with the given name, cron expression, and command.
+    /// Creates a new recurring schedule with the given name, cron expression, and command.
     pub fn new(
         name: impl Into<String>,
         cron_expr: impl Into<String>,
@@ -60,7 +130,31 @@ impl Schedule {
             id: Uuid::new_v4(),
             name: name.into(),
             description: None,
-            cron_expr: cron_expr.into(),
+            kind: ScheduleKind::recurring(cron_expr),
+            command: command.into(),
+            workdir: None,
+            env: std::collections::HashMap::new(),
+            status: ScheduleStatus::Enabled,
+            user: None,
+            created_at: now,
+            updated_at: now,
+            paused_until: None,
+            backend_id: None,
+        }
+    }
+
+    /// Creates a new one-off schedule with the given name, timestamp, and command.
+    pub fn new_one_off(
+        name: impl Into<String>,
+        run_at: DateTime<Utc>,
+        command: impl Into<String>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            description: None,
+            kind: ScheduleKind::one_off(run_at),
             command: command.into(),
             workdir: None,
             env: std::collections::HashMap::new(),
@@ -94,6 +188,21 @@ impl Schedule {
     /// Returns the service/timer name for this schedule.
     pub fn service_name(&self, prefix: &str) -> String {
         format!("{}-{}", prefix, self.name)
+    }
+
+    /// Returns true if this is a one-off schedule.
+    pub fn is_one_off(&self) -> bool {
+        self.kind.is_one_off()
+    }
+
+    /// Returns the cron expression if this is a recurring schedule.
+    pub fn cron_expr(&self) -> Option<&str> {
+        self.kind.cron_expr()
+    }
+
+    /// Returns the run_at timestamp if this is a one-off schedule.
+    pub fn run_at(&self) -> Option<DateTime<Utc>> {
+        self.kind.run_at()
     }
 }
 
@@ -226,10 +335,37 @@ mod tests {
             .with_description("Daily backup");
 
         assert_eq!(schedule.name, "backup");
-        assert_eq!(schedule.cron_expr, "0 2 * * *");
+        assert_eq!(schedule.cron_expr(), Some("0 2 * * *"));
         assert_eq!(schedule.command, "restic backup ~");
         assert_eq!(schedule.workdir, Some("/home/user".to_string()));
         assert_eq!(schedule.status, ScheduleStatus::Enabled);
+        assert!(!schedule.is_one_off());
+    }
+
+    #[test]
+    fn test_one_off_schedule_creation() {
+        let run_at = Utc::now() + chrono::Duration::hours(1);
+        let schedule = Schedule::new_one_off("one-time-backup", run_at, "restic backup ~")
+            .with_workdir("/home/user")
+            .with_description("One-time backup");
+
+        assert_eq!(schedule.name, "one-time-backup");
+        assert_eq!(schedule.run_at(), Some(run_at));
+        assert!(schedule.cron_expr().is_none());
+        assert!(schedule.is_one_off());
+        assert_eq!(schedule.status, ScheduleStatus::Enabled);
+    }
+
+    #[test]
+    fn test_schedule_kind_display() {
+        let recurring = ScheduleKind::recurring("0 8 * * *");
+        assert_eq!(recurring.display(), "0 8 * * *");
+
+        let run_at = DateTime::parse_from_rfc3339("2026-02-15T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let one_off = ScheduleKind::one_off(run_at);
+        assert_eq!(one_off.display(), "@2026-02-15 08:00:00 UTC");
     }
 
     #[test]
