@@ -19,6 +19,8 @@ use crate::validation::validate_schedule;
 pub struct InternalBackend {
     /// Check interval in seconds.
     check_interval_secs: u64,
+    /// Configuration for executor wrapping.
+    config: SkdlrConfig,
 }
 
 impl InternalBackend {
@@ -26,6 +28,7 @@ impl InternalBackend {
     pub fn new(config: &SkdlrConfig) -> Self {
         Self {
             check_interval_secs: config.internal.check_interval_secs,
+            config: config.clone(),
         }
     }
 
@@ -33,9 +36,19 @@ impl InternalBackend {
     async fn execute_command(&self, schedule: &Schedule) -> Run {
         let mut run = Run::new(schedule.id, false);
 
-        let (shell, args) = shell_command();
-        let mut cmd = TokioCommand::new(shell);
-        cmd.args(args).arg(&schedule.command);
+        // Get wrapped command if configured
+        let (program, mut args) = match super::render_wrapped_command(schedule, &self.config) {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                tracing::error!("Failed to render wrapped command: {}", e);
+                // Fallback to direct execution
+                let (shell, shell_args) = shell_command_owned();
+                (shell, shell_args)
+            }
+        };
+
+        let mut cmd = TokioCommand::new(program);
+        cmd.args(&mut args);
 
         if let Some(workdir) = &schedule.workdir {
             cmd.current_dir(workdir);
@@ -129,6 +142,19 @@ impl InternalBackend {
 
             tokio::time::sleep(std::time::Duration::from_secs(self.check_interval_secs)).await;
         }
+    }
+}
+
+/// Returns shell command as owned values (for fallback).
+fn shell_command_owned() -> (String, Vec<String>) {
+    #[cfg(target_os = "windows")]
+    {
+        ("cmd.exe".to_string(), vec!["/C".to_string()])
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        ("sh".to_string(), vec!["-c".to_string()])
     }
 }
 

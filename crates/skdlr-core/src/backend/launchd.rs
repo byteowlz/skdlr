@@ -18,6 +18,8 @@ pub struct LaunchdBackend {
     service_prefix: String,
     /// Path to LaunchAgents directory.
     agents_dir: PathBuf,
+    /// Configuration for executor wrapping.
+    config: SkdlrConfig,
 }
 
 impl LaunchdBackend {
@@ -30,6 +32,7 @@ impl LaunchdBackend {
         Self {
             service_prefix: config.service_prefix.clone(),
             agents_dir,
+            config: config.clone(),
         }
     }
 
@@ -46,7 +49,19 @@ impl LaunchdBackend {
 
     /// Generates the plist file content.
     fn generate_plist(&self, schedule: &Schedule) -> Result<String> {
-        let calendar_interval = cron_to_calendar_interval(&schedule.cron_expr)?;
+        // Get program arguments from wrapper
+        let program_args = super::render_launchd_args(schedule, &self.config)?;
+
+        // Convert args to plist XML array
+        let args_array: Vec<String> = program_args
+            .iter()
+            .map(|a| format!("        <string>{}</string>", escape_xml(a)))
+            .collect();
+
+        let cron_expr = schedule
+            .cron_expr()
+            .ok_or_else(|| Error::InvalidCron("schedule is not recurring".to_string()))?;
+        let calendar_interval = cron_to_calendar_interval(cron_expr)?;
 
         let mut plist = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -57,9 +72,7 @@ impl LaunchdBackend {
     <string>{}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/sh</string>
-        <string>-c</string>
-        <string>{}</string>
+{}
     </array>
     <key>StartCalendarInterval</key>
     {}
@@ -69,7 +82,7 @@ impl LaunchdBackend {
     <string>/tmp/{}.err.log</string>
 "#,
             self.label(schedule),
-            escape_xml(&schedule.command),
+            args_array.join("\n"),
             calendar_interval,
             self.label(schedule),
             self.label(schedule),

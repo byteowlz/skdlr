@@ -28,6 +28,9 @@ pub struct SkdlrConfig {
 
     /// Internal backend configuration.
     pub internal: InternalConfig,
+
+    /// Executor wrapper configuration.
+    pub executor: ExecutorConfig,
 }
 
 impl SkdlrConfig {
@@ -92,6 +95,7 @@ impl Default for SkdlrConfig {
             default_workdir: None,
             logging: LoggingConfig::default(),
             internal: InternalConfig::default(),
+            executor: ExecutorConfig::default(),
         }
     }
 }
@@ -128,5 +132,45 @@ impl Default for InternalConfig {
         Self {
             check_interval_secs: 60,
         }
+    }
+}
+
+/// Executor wrapper configuration for running scheduled commands.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExecutorConfig {
+    /// Wrapper binary to run all commands through (e.g., "octo-sandbox").
+    pub wrapper: Option<String>,
+
+    /// Arguments passed to wrapper before the scheduled command.
+    /// Supports placeholders: {name}, {workdir}, {command}
+    #[serde(default)]
+    pub wrapper_args: Vec<String>,
+}
+
+impl Default for ExecutorConfig {
+    fn default() -> Self {
+        Self {
+            wrapper: None,
+            wrapper_args: Vec::new(),
+        }
+    }
+}
+
+impl ExecutorConfig {
+    /// Checks if wrapper is enabled and required (in Octo mode).
+    pub fn is_required(&self) -> bool {
+        std::env::var("SKDLR_OCTO_MODE").is_ok()
+    }
+
+    /// Returns an error if wrapper is required but not configured.
+    pub fn validate(&self) -> crate::error::Result<()> {
+        if self.is_required() && self.wrapper.is_none() {
+            return Err(crate::error::Error::config(
+                "Executor wrapper is required in Octo mode (SKDLR_OCTO_MODE is set), \
+                but no wrapper is configured. Add [executor] section with 'wrapper' in config.",
+            ));
+        }
+        Ok(())
     }
 }

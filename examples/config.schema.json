@@ -68,6 +68,22 @@
         }
       },
       "additionalProperties": false
+    },
+    "executor": {
+      "type": "object",
+      "description": "Executor wrapper for scheduled commands",
+      "properties": {
+        "wrapper": {
+          "type": "string",
+          "description": "Wrapper binary to run commands through (e.g., octo-sandbox)"
+        },
+        "wrapper_args": {
+          "type": "array",
+          "description": "Arguments passed to wrapper before the scheduled command",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

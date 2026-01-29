@@ -22,3 +22,8 @@ fail_fast = true
 # Uncomment to move persistent data/state to custom directories.
 # data_dir = "$XDG_DATA_HOME/skdlr"
 # state_dir = "$XDG_STATE_HOME/skdlr"
+
+[executor]
+# Optional wrapper to run scheduled commands through a sandbox or launcher.
+# wrapper = "octo-sandbox"
+# wrapper_args = ["--config", "/etc/octo/sandbox.toml", "--workspace", "{workdir}", "--"]

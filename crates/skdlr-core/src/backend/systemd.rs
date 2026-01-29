@@ -20,6 +20,8 @@ pub struct SystemdBackend {
     service_prefix: String,
     /// Path to systemd user directory.
     user_dir: PathBuf,
+    /// Configuration for executor wrapping.
+    config: SkdlrConfig,
 }
 
 impl SystemdBackend {
@@ -33,6 +35,7 @@ impl SystemdBackend {
         Self {
             service_prefix: config.service_prefix.clone(),
             user_dir,
+            config: config.clone(),
         }
     }
 
@@ -58,15 +61,24 @@ impl SystemdBackend {
 
     /// Generates the service unit file content.
     fn generate_service(&self, schedule: &Schedule) -> String {
+        let exec_start = match super::render_exec_start(schedule, &self.config) {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                log::error!("Failed to render wrapped command: {}", e);
+                // Fallback to direct execution
+                format!("/bin/sh -c '{}'", schedule.command.replace('\'', "'\\''"))
+            }
+        };
+
         let mut content = format!(
             "[Unit]\n\
              Description=skdlr: {}\n\
              \n\
              [Service]\n\
              Type=oneshot\n\
-             ExecStart=/bin/sh -c '{}'\n",
+             {}\n",
             schedule.description.as_deref().unwrap_or(&schedule.name),
-            schedule.command.replace('\'', "'\\''"),
+            exec_start,
         );
 
         if let Some(workdir) = &schedule.workdir {

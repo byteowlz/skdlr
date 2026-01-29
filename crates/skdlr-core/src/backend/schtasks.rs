@@ -14,6 +14,8 @@ use crate::validation::validate_schedule;
 pub struct SchtasksBackend {
     /// Prefix for task names.
     service_prefix: String,
+    /// Configuration for executor wrapping.
+    config: SkdlrConfig,
 }
 
 impl SchtasksBackend {
@@ -21,6 +23,7 @@ impl SchtasksBackend {
     pub fn new(config: &SkdlrConfig) -> Self {
         Self {
             service_prefix: config.service_prefix.clone(),
+            config: config.clone(),
         }
     }
 
@@ -98,20 +101,28 @@ impl Backend for SchtasksBackend {
             validate_schedule(schedule)?;
 
             let task_name = self.task_name(schedule);
-            let mut args = vec![
+
+            // Get wrapped command
+            let (program, args) = super::render_wrapped_command(schedule, &self.config)?;
+            let full_command = format!("{} {}", program, args.join(" "));
+
+            let mut args_vec = vec![
                 "/CREATE".to_string(),
                 "/TN".to_string(),
                 task_name,
                 "/TR".to_string(),
-                schedule.command.clone(),
+                full_command,
                 "/F".to_string(), // Force overwrite
             ];
 
             // Add schedule parameters
-            let schedule_args = self.cron_to_schtasks_args(&schedule.cron_expr)?;
-            args.extend(schedule_args);
+            let cron_expr = schedule
+                .cron_expr()
+                .ok_or_else(|| Error::InvalidCron("schedule is not recurring".to_string()))?;
+            let schedule_args = self.cron_to_schtasks_args(cron_expr)?;
+            args_vec.extend(schedule_args);
 
-            let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            let args_refs: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
             let output = self.schtasks(&args_refs).await?;
 
             if !output.status.success() {

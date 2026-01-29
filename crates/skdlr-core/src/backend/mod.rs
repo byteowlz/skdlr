@@ -6,6 +6,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use crate::SkdlrConfig;
 use crate::error::Result;
 use crate::models::{Run, Schedule};
 
@@ -146,4 +147,87 @@ pub fn create_backend(kind: BackendKind, config: &crate::SkdlrConfig) -> Box<dyn
         #[allow(unreachable_patterns)]
         _ => Box::new(internal::InternalBackend::new(config)),
     }
+}
+
+/// Renders a schedule's command with optional executor wrapper.
+///
+/// Returns (program, args) where `args` includes the scheduled command
+/// as the final element(s).
+///
+/// Supports placeholders in wrapper_args:
+/// - `{name}` - Schedule name
+/// - `{workdir}` - Working directory
+///
+/// If SKDLR_OCTO_MODE is set and no wrapper is configured,
+/// this returns an error.
+pub fn render_wrapped_command(
+    schedule: &Schedule,
+    config: &SkdlrConfig,
+) -> Result<(String, Vec<String>)> {
+    // Validate executor config
+    config.executor.validate()?;
+
+    if let Some(wrapper) = &config.executor.wrapper {
+        // Expand placeholders in wrapper args
+        let mut args: Vec<String> = config
+            .executor
+            .wrapper_args
+            .iter()
+            .map(|arg| {
+                arg.replace("{name}", &schedule.name)
+                    .replace("{workdir}", &schedule.workdir.as_deref().unwrap_or("."))
+            })
+            .collect();
+
+        // Add delimiter and then the original command
+        if wrapper_args_has_delimiter(&config.executor.wrapper_args) {
+            // Wrapper already has delimiter, just append command
+            args.push(schedule.command.clone());
+        } else {
+            // Add delimiter to separate wrapper args from command
+            args.push("--".to_string());
+            args.push(schedule.command.clone());
+        }
+
+        Ok((wrapper.clone(), args))
+    } else {
+        // No wrapper configured - use direct execution
+        // Note: In Octo mode (SKDLR_OCTO_MODE), this should have been caught by validate()
+        Ok((
+            "/bin/sh".to_string(),
+            vec!["-c".to_string(), format!("exec {}", schedule.command)],
+        ))
+    }
+}
+
+/// Checks if wrapper args contain a delimiter like "--".
+fn wrapper_args_has_delimiter(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--" || a.starts_with("--"))
+}
+
+/// Renders a schedule's command as a single string for systemd ExecStart.
+/// This is a convenience wrapper around `render_wrapped_command`.
+pub fn render_exec_start(schedule: &Schedule, config: &SkdlrConfig) -> Result<String> {
+    let (program, args) = render_wrapped_command(schedule, config)?;
+
+    // Simple shell escaping for single quotes
+    let escaped_program = program.replace('\'', "'\\''");
+    let escaped_args = args
+        .iter()
+        .map(|a| a.replace('\'', "'\\''"))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    Ok(format!(
+        "/bin/sh -c '{}'",
+        format!("{} {}", escaped_program, escaped_args)
+    ))
+}
+
+/// Renders arguments for launchd ProgramArguments.
+pub fn render_launchd_args(schedule: &Schedule, config: &SkdlrConfig) -> Result<Vec<String>> {
+    let (program, args) = render_wrapped_command(schedule, config)?;
+    let mut full_args = vec![program];
+    full_args.extend(args);
+    Ok(full_args)
 }
