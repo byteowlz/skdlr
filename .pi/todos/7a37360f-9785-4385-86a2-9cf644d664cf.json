@@ -33,19 +33,19 @@
     {
       "id": "e785.1",
       "content": "Build skdlr-service daemon with internal scheduler loop",
-      "status": "in_progress",
+      "status": "completed",
       "priority": "high"
     },
     {
       "id": "e785.6",
       "content": "Dispatcher: runner dispatch interface (transport-agnostic)",
-      "status": "pending",
+      "status": "completed",
       "priority": "high"
     },
     {
       "id": "e785.7",
       "content": "API: schedule CRUD + run history + pause/resume with tenant scoping",
-      "status": "pending",
+      "status": "in_progress",
       "priority": "high"
     },
     {
@@ -61,5 +61,5 @@
       "priority": "medium"
     }
   ],
-  "updated_at": "2026-03-25T19:48:22.543Z"
+  "updated_at": "2026-03-25T19:55:34.718Z"
 }

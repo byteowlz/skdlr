@@ -1694,15 +1694,16 @@ version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
  "clap",
- "env_logger",
- "log",
  "serde",
  "serde_json",
  "skdlr-core",
  "tokio",
  "tower",
  "tower-http",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
