@@ -1,0 +1,7 @@
+id: rust-no-unsafe
+language: Rust
+severity: error
+message: "Unsafe code is forbidden in this project."
+note: "Use safe abstractions. If unsafe is absolutely required, it must be reviewed and documented."
+rule:
+  pattern: "unsafe { $$$BODY }"

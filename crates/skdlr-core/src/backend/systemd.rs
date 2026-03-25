@@ -15,6 +15,7 @@ use crate::models::{Run, Schedule, ScheduleKind};
 use crate::validation::validate_schedule;
 
 /// Systemd backend for Linux.
+#[derive(Debug)]
 pub struct SystemdBackend {
     /// Prefix for service/timer names.
     service_prefix: String,
@@ -417,8 +418,7 @@ pub fn is_available() -> bool {
         .arg("--user")
         .arg("--version")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Calculates the next run time from a schedule kind.
@@ -450,10 +450,10 @@ fn next_from_cron(cron_expr: &str) -> Option<DateTime<Utc>> {
         .and_then(|sched| sched.upcoming(Utc).next())
 }
 
-/// Converts a cron expression to systemd OnCalendar format.
+/// Converts a cron expression to systemd `OnCalendar` format.
 ///
 /// Cron: minute hour day-of-month month day-of-week
-/// OnCalendar: DayOfWeek Year-Month-Day Hour:Minute:Second
+/// `OnCalendar`: `DayOfWeek` Year-Month-Day Hour:Minute:Second
 fn cron_to_oncalendar(cron_expr: &str) -> Result<String> {
     let parts: Vec<&str> = cron_expr.split_whitespace().collect();
     if parts.len() != 5 {
@@ -512,6 +512,7 @@ fn dow_to_systemd(dow: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

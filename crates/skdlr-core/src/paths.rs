@@ -61,7 +61,7 @@ impl std::fmt::Display for AppPaths {
     }
 }
 
-/// Expand a PathBuf, resolving ~ and environment variables.
+/// Expand a `PathBuf`, resolving ~ and environment variables.
 pub fn expand_path(path: PathBuf) -> Result<PathBuf> {
     if let Some(text) = path.to_str() {
         expand_str_path(text)

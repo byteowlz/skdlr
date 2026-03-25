@@ -64,3 +64,66 @@ skdlr-core = { path = "crates/skdlr-core" }
 
 # Platform-specific dependencies are handled in individual crate Cargo.toml files
 # using target-specific dependencies with cfg attributes
+
+# ── Workspace-wide lint configuration ──────────────────────────────────────────
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+missing_debug_implementations = "warn"
+# Keep these at allow — lib crate exposes pub items consumed by multiple binaries
+dead_code = "allow"
+unused_imports = "allow"
+
+[workspace.lints.clippy]
+# ── Correctness & style ──
+collapsible_if = "warn"
+collapsible_else_if = "warn"
+needless_return = "warn"
+needless_borrow = "warn"
+clone_on_copy = "warn"
+single_char_add_str = "warn"
+manual_strip = "warn"
+manual_flatten = "warn"
+unnecessary_lazy_evaluations = "warn"
+unnecessary_map_or = "warn"
+io_other_error = "warn"
+single_match = "warn"
+redundant_closure_for_method_calls = "warn"
+match_wildcard_for_single_variants = "warn"
+flat_map_option = "warn"
+manual_let_else = "warn"
+implicit_clone = "warn"
+inconsistent_struct_constructor = "warn"
+ref_option_ref = "warn"
+semicolon_if_nothing_returned = "warn"
+unused_self = "warn"
+used_underscore_binding = "warn"
+
+# ── Performance ──
+cloned_instead_of_copied = "warn"
+inefficient_to_string = "warn"
+needless_pass_by_value = "warn"
+
+# ── Pedantic (stricter) ──
+ptr_arg = "warn"
+derivable_impls = "warn"
+doc_markdown = "warn"
+explicit_into_iter_loop = "warn"
+explicit_iter_loop = "warn"
+map_unwrap_or = "warn"
+
+# ── Deny (hard errors — use #[cfg_attr(test, allow(...))] in test modules) ──
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+# ── Intentionally allowed ──
+too_many_arguments = "allow"
+type_complexity = "allow"
+module_inception = "allow"
+module_name_repetitions = "allow"

@@ -154,11 +154,11 @@ pub fn create_backend(kind: BackendKind, config: &crate::SkdlrConfig) -> Box<dyn
 /// Returns (program, args) where `args` includes the scheduled command
 /// as the final element(s).
 ///
-/// Supports placeholders in wrapper_args:
+/// Supports placeholders in `wrapper_args`:
 /// - `{name}` - Schedule name
 /// - `{workdir}` - Working directory
 ///
-/// If SKDLR_OCTO_MODE is set and no wrapper is configured,
+/// If `SKDLR_OCTO_MODE` is set and no wrapper is configured,
 /// this returns an error.
 pub fn render_wrapped_command(
     schedule: &Schedule,
@@ -175,7 +175,7 @@ pub fn render_wrapped_command(
             .iter()
             .map(|arg| {
                 arg.replace("{name}", &schedule.name)
-                    .replace("{workdir}", &schedule.workdir.as_deref().unwrap_or("."))
+                    .replace("{workdir}", schedule.workdir.as_deref().unwrap_or("."))
             })
             .collect();
 
@@ -205,7 +205,7 @@ fn wrapper_args_has_delimiter(args: &[String]) -> bool {
     args.iter().any(|a| a == "--" || a.starts_with("--"))
 }
 
-/// Renders a schedule's command as a single string for systemd ExecStart.
+/// Renders a schedule's command as a single string for systemd `ExecStart`.
 /// This is a convenience wrapper around `render_wrapped_command`.
 pub fn render_exec_start(schedule: &Schedule, config: &SkdlrConfig) -> Result<String> {
     let (program, args) = render_wrapped_command(schedule, config)?;
@@ -218,13 +218,10 @@ pub fn render_exec_start(schedule: &Schedule, config: &SkdlrConfig) -> Result<St
         .collect::<Vec<_>>()
         .join(" ");
 
-    Ok(format!(
-        "/bin/sh -c '{}'",
-        format!("{} {}", escaped_program, escaped_args)
-    ))
+    Ok(format!("/bin/sh -c '{escaped_program} {escaped_args}'"))
 }
 
-/// Renders arguments for launchd ProgramArguments.
+/// Renders arguments for launchd `ProgramArguments`.
 pub fn render_launchd_args(schedule: &Schedule, config: &SkdlrConfig) -> Result<Vec<String>> {
     let (program, args) = render_wrapped_command(schedule, config)?;
     let mut full_args = vec![program];

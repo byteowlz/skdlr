@@ -21,3 +21,6 @@ toml.workspace = true
 tokio.workspace = true
 chrono.workspace = true
 cron.workspace = true
+
+[lints]
+workspace = true

@@ -1,4 +1,4 @@
-//! SQLite storage for schedule metadata.
+//! SQLite-based storage for schedule metadata.
 
 use std::path::Path;
 
@@ -10,6 +10,7 @@ use crate::models::{Run, RunStatus, Schedule, ScheduleKind, ScheduleStatus};
 use crate::validation::validate_schedule;
 
 /// SQLite-based storage for schedules and runs.
+#[derive(Debug)]
 pub struct Storage {
     conn: Connection,
 }
@@ -138,7 +139,7 @@ impl Storage {
                 "SELECT id, name, description, cron_expr, run_at, command, workdir, env, status, user, created_at, updated_at, paused_until, backend_id
                  FROM schedules WHERE id = ?1",
                 params![id.to_string()],
-                |row| self.row_to_schedule(row),
+                Self::row_to_schedule,
             )
             .optional()
             .map_err(Error::from)
@@ -151,7 +152,7 @@ impl Storage {
                 "SELECT id, name, description, cron_expr, run_at, command, workdir, env, status, user, created_at, updated_at, paused_until, backend_id
                  FROM schedules WHERE name = ?1",
                 params![name],
-                |row| self.row_to_schedule(row),
+                Self::row_to_schedule,
             )
             .optional()
             .map_err(Error::from)
@@ -165,7 +166,7 @@ impl Storage {
         )?;
 
         let schedules = stmt
-            .query_map([], |row| self.row_to_schedule(row))?
+            .query_map([], Self::row_to_schedule)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(schedules)
@@ -215,14 +216,14 @@ impl Storage {
 
         let runs = stmt
             .query_map(params![schedule_id.to_string(), limit as i64], |row| {
-                self.row_to_run(row)
+                Self::row_to_run(row)
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(runs)
     }
 
-    fn row_to_schedule(&self, row: &rusqlite::Row) -> rusqlite::Result<Schedule> {
+    fn row_to_schedule(row: &rusqlite::Row) -> rusqlite::Result<Schedule> {
         let id: String = row.get(0)?;
         let cron_expr: Option<String> = row.get(3)?;
         let run_at: Option<String> = row.get(4)?;
@@ -277,7 +278,7 @@ impl Storage {
         Ok(schedule)
     }
 
-    fn row_to_run(&self, row: &rusqlite::Row) -> rusqlite::Result<Run> {
+    fn row_to_run(row: &rusqlite::Row) -> rusqlite::Result<Run> {
         let id: String = row.get(0)?;
         let schedule_id: String = row.get(1)?;
         let started_at: String = row.get(2)?;
@@ -333,6 +334,7 @@ fn parse_env(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use chrono::Utc;

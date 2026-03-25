@@ -92,21 +92,25 @@ fmt-check:
 
 # Run clippy on all crates
 clippy:
-    cargo clippy --workspace -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
 
-# Alias for clippy
-lint: clippy
+# Run ast-grep structural lint rules
+ast-grep:
+    ast-grep scan
+
+# Full lint: clippy + ast-grep
+lint: clippy ast-grep
 
 # Clippy on a specific crate
 clippy-crate CRATE:
-    cargo clippy -p {{CRATE}} -- -D warnings
+    cargo clippy -p {{CRATE}} --all-targets -- -D warnings
 
 # Auto-fix clippy warnings
 fix:
     cargo clippy --workspace --fix --allow-dirty
 
 # Run all checks
-check-all: fmt-check clippy test
+check-all: fmt-check lint test
 
 # === Documentation ===
 

@@ -47,7 +47,7 @@ pub fn validate_cron_expression(expr: &str) -> Result<()> {
         .map_err(|e| Error::InvalidCron(e.to_string()))
 }
 
-/// Validates a one-off run_at timestamp.
+/// Validates a one-off `run_at` timestamp.
 pub fn validate_run_at(run_at: DateTime<Utc>) -> Result<()> {
     let now = Utc::now();
     if run_at <= now {
@@ -121,6 +121,7 @@ fn validate_env_key(key: &str) -> Result<()> {
 use std::str::FromStr;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

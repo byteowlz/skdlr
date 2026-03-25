@@ -41,7 +41,7 @@ impl ScheduleKind {
         }
     }
 
-    /// Returns the run_at timestamp if this is a one-off schedule.
+    /// Returns the `run_at` timestamp if this is a one-off schedule.
     pub fn run_at(&self) -> Option<DateTime<Utc>> {
         match self {
             Self::Recurring { .. } => None,
@@ -200,7 +200,7 @@ impl Schedule {
         self.kind.cron_expr()
     }
 
-    /// Returns the run_at timestamp if this is a one-off schedule.
+    /// Returns the `run_at` timestamp if this is a one-off schedule.
     pub fn run_at(&self) -> Option<DateTime<Utc>> {
         self.kind.run_at()
     }
@@ -325,6 +325,7 @@ impl std::fmt::Display for RunStatus {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

@@ -17,3 +17,6 @@ log.workspace = true
 ratatui.workspace = true
 serde.workspace = true
 tokio.workspace = true
+
+[lints]
+workspace = true

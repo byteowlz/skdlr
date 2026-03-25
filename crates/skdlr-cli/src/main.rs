@@ -1,4 +1,5 @@
 //! skdlr CLI - Cross-platform task scheduler.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -36,13 +37,13 @@ async fn run() -> Result<()> {
     match cli.command {
         Command::Add(cmd) => handle_add(&storage, backend.as_ref(), &config, cmd).await,
         Command::List(cmd) => handle_list(&storage, cmd),
-        Command::Show(cmd) => handle_show(&storage, cmd),
+        Command::Show(cmd) => handle_show(&storage, &cmd),
         Command::Edit(cmd) => handle_edit(&storage, backend.as_ref(), cmd).await,
         Command::Remove(cmd) => handle_remove(&storage, backend.as_ref(), cmd).await,
         Command::Enable(cmd) => handle_enable(&storage, backend.as_ref(), cmd).await,
         Command::Disable(cmd) => handle_disable(&storage, backend.as_ref(), cmd).await,
         Command::Run(cmd) => handle_run(&storage, backend.as_ref(), cmd).await,
-        Command::Logs(cmd) => handle_logs(&storage, cmd),
+        Command::Logs(cmd) => handle_logs(&storage, &cmd),
         Command::Status => handle_status(&storage, backend.as_ref()).await,
         Command::Next => handle_next(&storage, backend.as_ref()).await,
         Command::Backend => handle_backend(backend.as_ref()),
@@ -351,19 +352,17 @@ fn parse_natural_datetime(input: &str) -> Option<chrono::DateTime<chrono::Utc>> 
     let now = Local::now();
 
     // Handle "in X minutes/hours/days"
-    if input.starts_with("in ") {
-        let rest = &input[3..];
-        if let Some(dt) = parse_relative_duration(rest, now) {
-            return Some(dt.with_timezone(&chrono::Utc));
-        }
+    if let Some(rest) = input.strip_prefix("in ")
+        && let Some(dt) = parse_relative_duration(rest, now)
+    {
+        return Some(dt.with_timezone(&chrono::Utc));
     }
 
     // Handle "X minutes/hours/days from now"
-    if input.ends_with(" from now") {
-        let rest = &input[..input.len() - 9];
-        if let Some(dt) = parse_relative_duration(rest, now) {
-            return Some(dt.with_timezone(&chrono::Utc));
-        }
+    if let Some(rest) = input.strip_suffix(" from now")
+        && let Some(dt) = parse_relative_duration(rest, now)
+    {
+        return Some(dt.with_timezone(&chrono::Utc));
     }
 
     // Handle simple keywords without time
@@ -578,24 +577,22 @@ fn parse_natural_schedule(input: &str) -> Option<String> {
     }
 
     // "every X minutes/hours"
-    if input.starts_with("every ") {
-        let rest = &input[6..];
-
+    if let Some(rest) = input.strip_prefix("every ") {
         // "every N minutes"
         if let Some(cron) = parse_every_interval(rest) {
             return Some(cron);
         }
 
         // "every day at TIME"
-        if let Some(rest) = rest.strip_prefix("day at ") {
-            if let Some(time) = parse_time_string(rest) {
-                return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
-            }
+        if let Some(rest) = rest.strip_prefix("day at ")
+            && let Some(time) = parse_time_string(rest)
+        {
+            return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
         }
-        if let Some(rest) = rest.strip_prefix("day ") {
-            if let Some(time) = parse_time_string(rest) {
-                return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
-            }
+        if let Some(rest) = rest.strip_prefix("day ")
+            && let Some(time) = parse_time_string(rest)
+        {
+            return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
         }
 
         // "every monday/tuesday/etc [at TIME]"
@@ -610,15 +607,15 @@ fn parse_natural_schedule(input: &str) -> Option<String> {
     }
 
     // "daily at TIME"
-    if let Some(rest) = input.strip_prefix("daily at ") {
-        if let Some(time) = parse_time_string(rest) {
-            return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
-        }
+    if let Some(rest) = input.strip_prefix("daily at ")
+        && let Some(time) = parse_time_string(rest)
+    {
+        return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
     }
-    if let Some(rest) = input.strip_prefix("daily ") {
-        if let Some(time) = parse_time_string(rest) {
-            return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
-        }
+    if let Some(rest) = input.strip_prefix("daily ")
+        && let Some(time) = parse_time_string(rest)
+    {
+        return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
     }
 
     // "weekly on DAY [at TIME]"
@@ -630,46 +627,46 @@ fn parse_natural_schedule(input: &str) -> Option<String> {
     }
 
     // "weekdays at TIME" or "weekdays TIME"
-    if let Some(rest) = input.strip_prefix("weekdays at ") {
-        if let Some(time) = parse_time_string(rest) {
-            return Some(format!(
-                "{} {} * * 1-5",
-                time.format("%M"),
-                time.format("%H")
-            ));
-        }
+    if let Some(rest) = input.strip_prefix("weekdays at ")
+        && let Some(time) = parse_time_string(rest)
+    {
+        return Some(format!(
+            "{} {} * * 1-5",
+            time.format("%M"),
+            time.format("%H")
+        ));
     }
-    if let Some(rest) = input.strip_prefix("weekdays ") {
-        if let Some(time) = parse_time_string(rest) {
-            return Some(format!(
-                "{} {} * * 1-5",
-                time.format("%M"),
-                time.format("%H")
-            ));
-        }
+    if let Some(rest) = input.strip_prefix("weekdays ")
+        && let Some(time) = parse_time_string(rest)
+    {
+        return Some(format!(
+            "{} {} * * 1-5",
+            time.format("%M"),
+            time.format("%H")
+        ));
     }
     if input == "weekdays" {
         return Some("0 9 * * 1-5".to_string());
     }
 
     // "weekends at TIME"
-    if let Some(rest) = input.strip_prefix("weekends at ") {
-        if let Some(time) = parse_time_string(rest) {
-            return Some(format!(
-                "{} {} * * 0,6",
-                time.format("%M"),
-                time.format("%H")
-            ));
-        }
+    if let Some(rest) = input.strip_prefix("weekends at ")
+        && let Some(time) = parse_time_string(rest)
+    {
+        return Some(format!(
+            "{} {} * * 0,6",
+            time.format("%M"),
+            time.format("%H")
+        ));
     }
-    if let Some(rest) = input.strip_prefix("weekends ") {
-        if let Some(time) = parse_time_string(rest) {
-            return Some(format!(
-                "{} {} * * 0,6",
-                time.format("%M"),
-                time.format("%H")
-            ));
-        }
+    if let Some(rest) = input.strip_prefix("weekends ")
+        && let Some(time) = parse_time_string(rest)
+    {
+        return Some(format!(
+            "{} {} * * 0,6",
+            time.format("%M"),
+            time.format("%H")
+        ));
     }
     if input == "weekends" {
         return Some("0 9 * * 0,6".to_string());
@@ -677,26 +674,28 @@ fn parse_natural_schedule(input: &str) -> Option<String> {
 
     // Just a weekday name with optional time: "monday 9am" or "monday at 9am"
     let parts: Vec<&str> = input.split_whitespace().collect();
-    if !parts.is_empty() {
-        if let Some(dow) = weekday_to_cron(parts[0]) {
-            let time = if parts.len() > 1 {
-                let time_str = if parts.len() > 2 && parts[1] == "at" {
-                    parts[2]
-                } else {
-                    parts[1]
-                };
-                parse_time_string(time_str)
-                    .unwrap_or_else(|| chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap())
+    if !parts.is_empty()
+        && let Some(dow) = weekday_to_cron(parts[0])
+    {
+        let time = if parts.len() > 1 {
+            let time_str = if parts.len() > 2 && parts[1] == "at" {
+                parts[2]
             } else {
-                chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap()
+                parts[1]
             };
-            return Some(format!(
-                "{} {} * * {}",
-                time.format("%M"),
-                time.format("%H"),
-                dow
-            ));
-        }
+            // SAFETY: 9:00:00 is always a valid time
+            let default_time =
+                chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap_or(chrono::NaiveTime::MIN);
+            parse_time_string(time_str).unwrap_or(default_time)
+        } else {
+            chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap_or(chrono::NaiveTime::MIN)
+        };
+        return Some(format!(
+            "{} {} * * {}",
+            time.format("%M"),
+            time.format("%H"),
+            dow
+        ));
     }
 
     None
@@ -713,20 +712,8 @@ fn parse_every_interval(input: &str) -> Option<String> {
     let unit = parts[1].trim_end_matches('s');
 
     match unit {
-        "minute" | "min" => {
-            if amount > 0 && 60 % amount == 0 {
-                Some(format!("*/{} * * * *", amount))
-            } else {
-                Some(format!("*/{} * * * *", amount))
-            }
-        }
-        "hour" | "hr" => {
-            if amount > 0 && 24 % amount == 0 {
-                Some(format!("0 */{} * * *", amount))
-            } else {
-                Some(format!("0 */{} * * *", amount))
-            }
-        }
+        "minute" | "min" if amount > 0 => Some(format!("*/{amount} * * * *")),
+        "hour" | "hr" if amount > 0 => Some(format!("0 */{amount} * * *")),
         _ => None,
     }
 }
@@ -772,10 +759,10 @@ fn parse_every_month(input: &str) -> Option<String> {
     }
 
     // "at TIME" - default to 1st of month
-    if let Some(rest) = input.strip_prefix("at ") {
-        if let Some(time) = parse_time_string(rest) {
-            return Some(format!("{} {} 1 * *", time.format("%M"), time.format("%H")));
-        }
+    if let Some(rest) = input.strip_prefix("at ")
+        && let Some(time) = parse_time_string(rest)
+    {
+        return Some(format!("{} {} 1 * *", time.format("%M"), time.format("%H")));
     }
 
     None
@@ -796,7 +783,7 @@ fn parse_month_day_time(input: &str) -> Option<String> {
         .trim_end_matches("th");
     let day: u32 = day_str.parse().ok()?;
 
-    if day < 1 || day > 31 {
+    if !(1..=31).contains(&day) {
         return None;
     }
 
@@ -900,7 +887,7 @@ fn handle_list(storage: &Storage, _cmd: ListCommand) -> Result<()> {
     Ok(())
 }
 
-fn handle_show(storage: &Storage, cmd: ShowCommand) -> Result<()> {
+fn handle_show(storage: &Storage, cmd: &ShowCommand) -> Result<()> {
     let schedule = storage
         .get_schedule_by_name(&cmd.name)?
         .ok_or_else(|| anyhow::anyhow!("schedule '{}' not found", cmd.name))?;
@@ -1067,7 +1054,7 @@ async fn handle_run(storage: &Storage, backend: &dyn Backend, cmd: RunCommand) -
     Ok(())
 }
 
-fn handle_logs(storage: &Storage, cmd: LogsCommand) -> Result<()> {
+fn handle_logs(storage: &Storage, cmd: &LogsCommand) -> Result<()> {
     let schedule = storage
         .get_schedule_by_name(&cmd.name)?
         .ok_or_else(|| anyhow::anyhow!("schedule '{}' not found", cmd.name))?;

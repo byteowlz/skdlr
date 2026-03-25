@@ -1,0 +1,65 @@
+{
+  "todos": [
+    {
+      "id": "lint",
+      "content": "Harden clippy rules, linting, ast-grep from oqto reference",
+      "status": "in_progress",
+      "priority": "high"
+    },
+    {
+      "id": "e785.2",
+      "content": "Schema: add tenant_id and change unique key to (tenant_id, name)",
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "e785.3",
+      "content": "Schema: add job_instances lease/retry table",
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "e785.1",
+      "content": "Build skdlr-service daemon with internal scheduler loop",
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "e785.4",
+      "content": "Scheduler core: atomic claim + lease renewal + stuck-job recovery",
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "e785.5",
+      "content": "Scheduler core: retry/backoff/dead-letter with idempotency keys",
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "e785.6",
+      "content": "Dispatcher: runner dispatch interface (transport-agnostic)",
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "e785.7",
+      "content": "API: schedule CRUD + run history + pause/resume with tenant scoping",
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "e785.9",
+      "content": "Tests: multi-tenant isolation, idempotency, retry/lease behavior",
+      "status": "pending",
+      "priority": "high"
+    },
+    {
+      "id": "e785.8",
+      "content": "Docs: runtime-mode guide and migration notes",
+      "status": "pending",
+      "priority": "medium"
+    }
+  ],
+  "updated_at": "2026-03-25T19:27:24.892Z"
+}

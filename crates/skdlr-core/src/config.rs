@@ -136,7 +136,7 @@ impl Default for InternalConfig {
 }
 
 /// Executor wrapper configuration for running scheduled commands.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ExecutorConfig {
     /// Wrapper binary to run all commands through (e.g., "octo-sandbox").
@@ -146,15 +146,6 @@ pub struct ExecutorConfig {
     /// Supports placeholders: {name}, {workdir}, {command}
     #[serde(default)]
     pub wrapper_args: Vec<String>,
-}
-
-impl Default for ExecutorConfig {
-    fn default() -> Self {
-        Self {
-            wrapper: None,
-            wrapper_args: Vec::new(),
-        }
-    }
 }
 
 impl ExecutorConfig {

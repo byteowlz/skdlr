@@ -16,6 +16,7 @@ use crate::validation::validate_schedule;
 ///
 /// This backend runs as part of the skdlr daemon and checks schedules
 /// at regular intervals, executing commands when their cron expressions match.
+#[derive(Debug)]
 pub struct InternalBackend {
     /// Check interval in seconds.
     check_interval_secs: u64,
@@ -72,9 +73,9 @@ impl InternalBackend {
     }
 
     /// Calculates the next run time based on schedule kind.
-    fn next_run_time(&self, kind: &ScheduleKind) -> Option<DateTime<Utc>> {
+    fn next_run_time(kind: &ScheduleKind) -> Option<DateTime<Utc>> {
         match kind {
-            ScheduleKind::Recurring { cron_expr } => self.next_from_cron(cron_expr),
+            ScheduleKind::Recurring { cron_expr } => Self::next_from_cron(cron_expr),
             ScheduleKind::OneOff { run_at } => {
                 // Return run_at if it's in the future
                 let now = Utc::now();
@@ -84,7 +85,7 @@ impl InternalBackend {
     }
 
     /// Calculates the next run time from a cron expression.
-    fn next_from_cron(&self, cron_expr: &str) -> Option<DateTime<Utc>> {
+    fn next_from_cron(cron_expr: &str) -> Option<DateTime<Utc>> {
         use cron::Schedule as CronSchedule;
         use std::str::FromStr;
 
@@ -112,7 +113,7 @@ impl InternalBackend {
                 }
 
                 // Check if schedule should run now
-                if let Some(next) = self.next_run_time(&schedule.kind) {
+                if let Some(next) = Self::next_run_time(&schedule.kind) {
                     let now = Utc::now();
                     let diff = (next - now).num_seconds().abs();
 
@@ -232,7 +233,7 @@ impl Backend for InternalBackend {
         &'a self,
         schedule: &'a Schedule,
     ) -> BoxFuture<'a, Result<Option<DateTime<Utc>>>> {
-        Box::pin(async move { Ok(self.next_run_time(&schedule.kind)) })
+        Box::pin(async move { Ok(Self::next_run_time(&schedule.kind)) })
     }
 
     fn is_available(&self) -> bool {
@@ -241,6 +242,7 @@ impl Backend for InternalBackend {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

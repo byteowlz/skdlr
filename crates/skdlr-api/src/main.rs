@@ -1,7 +1,7 @@
 //! skdlr-api - HTTP API server for octo integration.
 //!
 //! This is a placeholder implementation. Full API implementation is tracked in:
-//! https://github.com/byteowlz/skdlr/issues/skdlr-axe
+//! <https://github.com/byteowlz/skdlr/issues/skdlr-axe>
 
 use std::io::{self, Write};
 use std::net::SocketAddr;

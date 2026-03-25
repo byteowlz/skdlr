@@ -1,0 +1,9 @@
+id: rust-no-println
+language: Rust
+severity: warning
+message: "Use tracing macros (info!, warn!, error!) instead of println!/eprintln! for observability."
+note: "Direct stdout/stderr output breaks structured logging. Use tracing for application messages."
+rule:
+  any:
+    - pattern: println!($$$ARGS)
+    - pattern: eprintln!($$$ARGS)

@@ -1,7 +1,8 @@
 //! skdlr-mcp - MCP server for AI agent integration.
 //!
 //! This is a placeholder implementation. Full MCP implementation is tracked in:
-//! https://github.com/byteowlz/skdlr/issues/skdlr-d4w
+//! <https://github.com/byteowlz/skdlr/issues/skdlr-d4w>
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use std::io::{self, Write};
 

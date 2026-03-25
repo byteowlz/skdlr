@@ -40,3 +40,6 @@ async-trait.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Windows Task Scheduler via schtasks.exe CLI
+
+[lints]
+workspace = true

@@ -1,7 +1,7 @@
 //! skdlr-tui - Interactive TUI for schedule management.
 //!
 //! This is a placeholder implementation. Full TUI implementation is tracked in:
-//! https://github.com/byteowlz/skdlr/issues/skdlr-er3
+//! <https://github.com/byteowlz/skdlr/issues/skdlr-er3>
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -45,7 +45,7 @@ fn try_main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(storage)?;
+    let mut app = App::new(&storage)?;
     let result = run_app(&mut terminal, &mut app);
 
     disable_raw_mode()?;
@@ -77,7 +77,7 @@ struct App {
 }
 
 impl App {
-    fn new(storage: Storage) -> Result<Self> {
+    fn new(storage: &Storage) -> Result<Self> {
         let schedules = storage
             .list_schedules()?
             .into_iter()
