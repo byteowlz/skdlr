@@ -45,13 +45,13 @@
     {
       "id": "e785.7",
       "content": "API: schedule CRUD + run history + pause/resume with tenant scoping",
-      "status": "in_progress",
+      "status": "completed",
       "priority": "high"
     },
     {
       "id": "e785.9",
       "content": "Tests: multi-tenant isolation, idempotency, retry/lease behavior",
-      "status": "pending",
+      "status": "in_progress",
       "priority": "high"
     },
     {
@@ -61,5 +61,5 @@
       "priority": "medium"
     }
   ],
-  "updated_at": "2026-03-25T19:55:34.718Z"
+  "updated_at": "2026-03-25T19:57:47.842Z"
 }
