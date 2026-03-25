@@ -113,6 +113,19 @@ explicit_into_iter_loop = "warn"
 explicit_iter_loop = "warn"
 map_unwrap_or = "warn"
 
+# ── Complexity ──
+cognitive_complexity = "warn"        # functions with deeply nested/branching logic
+too_many_lines = "warn"              # functions > 100 lines
+too_many_arguments = "warn"          # functions with > 7 args (override per-site if needed)
+large_enum_variant = "warn"          # enum variants with large size disparity
+type_complexity = "warn"             # overly nested generic types
+option_option = "warn"               # Option<Option<T>> is usually a design smell
+struct_excessive_bools = "warn"      # structs with many bool fields
+fn_params_excessive_bools = "warn"   # functions with many bool params
+needless_collect = "warn"            # .collect() followed by .iter() — just chain
+manual_is_variant_and = "warn"       # verbose match when is_some_and/is_ok_and works
+wildcard_imports = "warn"            # use foo::* obscures where names come from
+
 # ── Deny (hard errors — use #[cfg_attr(test, allow(...))] in test modules) ──
 unwrap_used = "deny"
 expect_used = "deny"
@@ -124,7 +137,5 @@ print_stdout = "deny"
 print_stderr = "deny"
 
 # ── Intentionally allowed ──
-too_many_arguments = "allow"
-type_complexity = "allow"
 module_inception = "allow"
 module_name_repetitions = "allow"

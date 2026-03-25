@@ -562,143 +562,118 @@ fn parse_schedule_input(input: &str) -> Result<String> {
 
 /// Parses natural language schedule expressions into cron format.
 fn parse_natural_schedule(input: &str) -> Option<String> {
-    // Simple frequency keywords
+    parse_keyword_schedule(input)
+        .or_else(|| parse_every_prefix(input))
+        .or_else(|| parse_daily_prefix(input))
+        .or_else(|| parse_weekly_prefix(input))
+        .or_else(|| parse_day_group_schedule(input))
+        .or_else(|| parse_bare_weekday(input))
+}
+
+/// Matches simple keyword schedules (hourly, daily, midnight, etc.).
+fn parse_keyword_schedule(input: &str) -> Option<String> {
     match input {
-        "hourly" | "every hour" => return Some("0 * * * *".to_string()),
-        "daily" | "every day" => return Some("0 9 * * *".to_string()), // Default to 9am
-        "weekly" | "every week" => return Some("0 9 * * 1".to_string()), // Monday 9am
-        "monthly" | "every month" => return Some("0 9 1 * *".to_string()), // 1st of month 9am
-        "yearly" | "annually" | "every year" => return Some("0 9 1 1 *".to_string()), // Jan 1st 9am
-        "midnight" | "every midnight" | "daily at midnight" => {
-            return Some("0 0 * * *".to_string());
-        }
-        "noon" | "every noon" | "daily at noon" => return Some("0 12 * * *".to_string()),
-        _ => {}
+        "hourly" | "every hour" => Some("0 * * * *".to_string()),
+        "daily" | "every day" => Some("0 9 * * *".to_string()),
+        "weekly" | "every week" => Some("0 9 * * 1".to_string()),
+        "monthly" | "every month" => Some("0 9 1 * *".to_string()),
+        "yearly" | "annually" | "every year" => Some("0 9 1 1 *".to_string()),
+        "midnight" | "every midnight" | "daily at midnight" => Some("0 0 * * *".to_string()),
+        "noon" | "every noon" | "daily at noon" => Some("0 12 * * *".to_string()),
+        "weekdays" => Some("0 9 * * 1-5".to_string()),
+        "weekends" => Some("0 9 * * 0,6".to_string()),
+        _ => None,
+    }
+}
+
+/// Matches "every ..." patterns (interval, day, weekday, month).
+fn parse_every_prefix(input: &str) -> Option<String> {
+    let rest = input.strip_prefix("every ")?;
+
+    if let Some(cron) = parse_every_interval(rest) {
+        return Some(cron);
     }
 
-    // "every X minutes/hours"
-    if let Some(rest) = input.strip_prefix("every ") {
-        // "every N minutes"
-        if let Some(cron) = parse_every_interval(rest) {
-            return Some(cron);
-        }
-
-        // "every day at TIME"
-        if let Some(rest) = rest.strip_prefix("day at ")
-            && let Some(time) = parse_time_string(rest)
-        {
-            return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
-        }
-        if let Some(rest) = rest.strip_prefix("day ")
-            && let Some(time) = parse_time_string(rest)
-        {
-            return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
-        }
-
-        // "every monday/tuesday/etc [at TIME]"
-        if let Some(cron) = parse_every_weekday(rest) {
-            return Some(cron);
-        }
-
-        // "every month on DAY [at TIME]" or "every month at TIME"
-        if let Some(cron) = parse_every_month(rest) {
-            return Some(cron);
-        }
-    }
-
-    // "daily at TIME"
-    if let Some(rest) = input.strip_prefix("daily at ")
-        && let Some(time) = parse_time_string(rest)
-    {
-        return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
-    }
-    if let Some(rest) = input.strip_prefix("daily ")
-        && let Some(time) = parse_time_string(rest)
+    // "every day at TIME" / "every day TIME"
+    if let Some(time) = rest
+        .strip_prefix("day at ")
+        .or_else(|| rest.strip_prefix("day "))
+        .and_then(parse_time_string)
     {
         return Some(format!("{} {} * * *", time.format("%M"), time.format("%H")));
     }
 
-    // "weekly on DAY [at TIME]"
-    if let Some(rest) = input.strip_prefix("weekly on ") {
-        return parse_weekly_on(rest);
-    }
-    if let Some(rest) = input.strip_prefix("weekly ") {
-        return parse_weekly_on(rest);
+    if let Some(cron) = parse_every_weekday(rest) {
+        return Some(cron);
     }
 
-    // "weekdays at TIME" or "weekdays TIME"
-    if let Some(rest) = input.strip_prefix("weekdays at ")
-        && let Some(time) = parse_time_string(rest)
-    {
-        return Some(format!(
-            "{} {} * * 1-5",
-            time.format("%M"),
-            time.format("%H")
-        ));
-    }
-    if let Some(rest) = input.strip_prefix("weekdays ")
-        && let Some(time) = parse_time_string(rest)
-    {
-        return Some(format!(
-            "{} {} * * 1-5",
-            time.format("%M"),
-            time.format("%H")
-        ));
-    }
-    if input == "weekdays" {
-        return Some("0 9 * * 1-5".to_string());
-    }
+    parse_every_month(rest)
+}
 
-    // "weekends at TIME"
-    if let Some(rest) = input.strip_prefix("weekends at ")
-        && let Some(time) = parse_time_string(rest)
-    {
-        return Some(format!(
-            "{} {} * * 0,6",
-            time.format("%M"),
-            time.format("%H")
-        ));
-    }
-    if let Some(rest) = input.strip_prefix("weekends ")
-        && let Some(time) = parse_time_string(rest)
-    {
-        return Some(format!(
-            "{} {} * * 0,6",
-            time.format("%M"),
-            time.format("%H")
-        ));
-    }
-    if input == "weekends" {
-        return Some("0 9 * * 0,6".to_string());
-    }
+/// Matches "daily at TIME" / "daily TIME".
+fn parse_daily_prefix(input: &str) -> Option<String> {
+    let rest = input
+        .strip_prefix("daily at ")
+        .or_else(|| input.strip_prefix("daily "))?;
+    let time = parse_time_string(rest)?;
+    Some(format!("{} {} * * *", time.format("%M"), time.format("%H")))
+}
 
-    // Just a weekday name with optional time: "monday 9am" or "monday at 9am"
+/// Matches "weekly on ..." / "weekly ...".
+fn parse_weekly_prefix(input: &str) -> Option<String> {
+    let rest = input
+        .strip_prefix("weekly on ")
+        .or_else(|| input.strip_prefix("weekly "))?;
+    parse_weekly_on(rest)
+}
+
+/// Matches "weekdays/weekends [at] TIME".
+fn parse_day_group_schedule(input: &str) -> Option<String> {
+    let (rest, days) = if let Some(r) = input
+        .strip_prefix("weekdays at ")
+        .or_else(|| input.strip_prefix("weekdays "))
+    {
+        (r, "1-5")
+    } else if let Some(r) = input
+        .strip_prefix("weekends at ")
+        .or_else(|| input.strip_prefix("weekends "))
+    {
+        (r, "0,6")
+    } else {
+        return None;
+    };
+    let time = parse_time_string(rest)?;
+    Some(format!(
+        "{} {} * * {days}",
+        time.format("%M"),
+        time.format("%H")
+    ))
+}
+
+/// Matches bare weekday names with optional time: "monday 9am" / "monday at 9am".
+fn parse_bare_weekday(input: &str) -> Option<String> {
     let parts: Vec<&str> = input.split_whitespace().collect();
-    if !parts.is_empty()
-        && let Some(dow) = weekday_to_cron(parts[0])
-    {
-        let time = if parts.len() > 1 {
-            let time_str = if parts.len() > 2 && parts[1] == "at" {
-                parts[2]
-            } else {
-                parts[1]
-            };
-            // SAFETY: 9:00:00 is always a valid time
-            let default_time =
-                chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap_or(chrono::NaiveTime::MIN);
-            parse_time_string(time_str).unwrap_or(default_time)
-        } else {
-            chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap_or(chrono::NaiveTime::MIN)
-        };
-        return Some(format!(
-            "{} {} * * {}",
-            time.format("%M"),
-            time.format("%H"),
-            dow
-        ));
-    }
+    let dow = weekday_to_cron(parts.first()?)?;
 
-    None
+    let default_time = chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap_or(chrono::NaiveTime::MIN);
+
+    let time = if parts.len() > 1 {
+        let time_str = if parts.len() > 2 && parts[1] == "at" {
+            parts[2]
+        } else {
+            parts[1]
+        };
+        parse_time_string(time_str).unwrap_or(default_time)
+    } else {
+        default_time
+    };
+
+    Some(format!(
+        "{} {} * * {}",
+        time.format("%M"),
+        time.format("%H"),
+        dow
+    ))
 }
 
 /// Parses "N minutes" or "N hours" into cron

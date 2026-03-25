@@ -76,6 +76,7 @@ impl Scheduler {
     }
 
     /// Runs the scheduler loop until shutdown is signaled.
+    #[allow(clippy::cognitive_complexity)]
     pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         tracing::info!(
             worker_id = %self.config.worker_id,
@@ -248,51 +249,76 @@ impl Scheduler {
         result: &DispatchResult,
     ) -> Result<()> {
         if result.is_success() {
-            tracing::info!(
-                job_id = %instance.id,
-                schedule = %schedule.name,
-                "Job succeeded"
-            );
-            self.db().complete_job(&instance.id, result.exit_code)?;
+            self.handle_success(instance, schedule, result)
         } else {
-            let error_msg = result
-                .error_message()
-                .unwrap_or_else(|| format!("exit code {}", result.exit_code));
-
-            tracing::warn!(
-                job_id = %instance.id,
-                schedule = %schedule.name,
-                exit_code = result.exit_code,
-                error = %error_msg,
-                "Job failed"
-            );
-
-            let new_state =
-                self.db()
-                    .fail_job(&instance.id, &error_msg, schedule.retry_delay_secs)?;
-
-            match new_state {
-                JobState::Retrying => {
-                    tracing::info!(
-                        job_id = %instance.id,
-                        attempt = instance.attempt + 1,
-                        max = instance.max_attempts,
-                        "Job scheduled for retry"
-                    );
-                }
-                JobState::DeadLetter => {
-                    tracing::error!(
-                        job_id = %instance.id,
-                        schedule = %schedule.name,
-                        attempts = instance.max_attempts,
-                        "Job moved to dead letter queue"
-                    );
-                }
-                _ => {}
-            }
+            self.handle_failure(instance, schedule, result)
         }
+    }
 
+    /// Records a successful job completion.
+    fn handle_success(
+        &self,
+        instance: &JobInstance,
+        schedule: &Schedule,
+        result: &DispatchResult,
+    ) -> Result<()> {
+        tracing::info!(
+            job_id = %instance.id,
+            schedule = %schedule.name,
+            "Job succeeded"
+        );
+        self.db().complete_job(&instance.id, result.exit_code)?;
         Ok(())
+    }
+
+    /// Records a job failure, scheduling retry or dead-lettering.
+    fn handle_failure(
+        &self,
+        instance: &JobInstance,
+        schedule: &Schedule,
+        result: &DispatchResult,
+    ) -> Result<()> {
+        let error_msg = result
+            .error_message()
+            .unwrap_or_else(|| format!("exit code {}", result.exit_code));
+
+        tracing::warn!(
+            job_id = %instance.id,
+            schedule = %schedule.name,
+            exit_code = result.exit_code,
+            error = %error_msg,
+            "Job failed"
+        );
+
+        let new_state = self
+            .db()
+            .fail_job(&instance.id, &error_msg, schedule.retry_delay_secs)?;
+
+        Self::log_retry_state(instance, schedule, new_state);
+        Ok(())
+    }
+
+    /// Logs the retry/dead-letter transition.
+    fn log_retry_state(instance: &JobInstance, schedule: &Schedule, state: JobState) {
+        match state {
+            JobState::Retrying => {
+                tracing::info!(
+                    job_id = %instance.id,
+                    attempt = instance.attempt + 1,
+                    max = instance.max_attempts,
+                    "Job scheduled for retry"
+                );
+            }
+            JobState::DeadLetter => {
+                tracing::error!(
+                    job_id = %instance.id,
+                    schedule = %schedule.name,
+                    attempts = instance.max_attempts,
+                    "Job moved to dead letter queue"
+                );
+            }
+            _ => {}
+        }
     }
 
     /// Recovers jobs with expired leases.

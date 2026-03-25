@@ -104,44 +104,50 @@ impl InternalBackend {
     /// Starts the scheduler loop (call this in daemon mode).
     pub async fn run_scheduler(&self, storage: &crate::Storage) -> Result<()> {
         loop {
-            // Load enabled schedules
             let schedules = storage.list_schedules()?;
 
             for schedule in schedules {
-                if schedule.status != ScheduleStatus::Enabled {
-                    continue;
-                }
-
-                // Check if schedule should run now
-                if let Some(next) = Self::next_run_time(&schedule.kind) {
-                    let now = Utc::now();
-                    let diff = (next - now).num_seconds().abs();
-
-                    // If within check interval, execute
-                    if diff <= self.check_interval_secs as i64 {
-                        tracing::info!("Executing schedule: {}", schedule.name);
-                        let run = self.execute_command(&schedule).await;
-                        if let Err(e) = storage.save_run(&run) {
-                            tracing::error!("Failed to save run: {}", e);
-                        }
-
-                        // For one-off schedules, disable after execution
-                        if schedule.is_one_off() {
-                            let mut updated = schedule.clone();
-                            updated.status = ScheduleStatus::Disabled;
-                            updated.updated_at = Utc::now();
-                            if let Err(e) = storage.save_schedule(&updated) {
-                                tracing::error!(
-                                    "Failed to disable one-off schedule after execution: {}",
-                                    e
-                                );
-                            }
-                        }
-                    }
-                }
+                self.maybe_execute(storage, &schedule).await;
             }
 
             tokio::time::sleep(std::time::Duration::from_secs(self.check_interval_secs)).await;
+        }
+    }
+
+    /// Checks if a schedule is due and executes it.
+    async fn maybe_execute(&self, storage: &crate::Storage, schedule: &Schedule) {
+        if schedule.status != ScheduleStatus::Enabled {
+            return;
+        }
+
+        let Some(next) = Self::next_run_time(&schedule.kind) else {
+            return;
+        };
+
+        let now = Utc::now();
+        let diff = (next - now).num_seconds().abs();
+        if diff > self.check_interval_secs as i64 {
+            return;
+        }
+
+        tracing::info!("Executing schedule: {}", schedule.name);
+        let run = self.execute_command(schedule).await;
+        if let Err(e) = storage.save_run(&run) {
+            tracing::error!("Failed to save run: {}", e);
+        }
+
+        if schedule.is_one_off() {
+            Self::disable_one_off(storage, schedule);
+        }
+    }
+
+    /// Disables a one-off schedule after execution.
+    fn disable_one_off(storage: &crate::Storage, schedule: &Schedule) {
+        let mut updated = schedule.clone();
+        updated.status = ScheduleStatus::Disabled;
+        updated.updated_at = Utc::now();
+        if let Err(e) = storage.save_schedule(&updated) {
+            tracing::error!("Failed to disable one-off schedule after execution: {}", e);
         }
     }
 }
