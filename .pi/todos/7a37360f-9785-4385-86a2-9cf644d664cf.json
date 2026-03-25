@@ -9,31 +9,31 @@
     {
       "id": "e785.2",
       "content": "Schema: add tenant_id and change unique key to (tenant_id, name)",
-      "status": "in_progress",
+      "status": "completed",
       "priority": "high"
     },
     {
       "id": "e785.3",
       "content": "Schema: add job_instances lease/retry table",
-      "status": "pending",
-      "priority": "high"
-    },
-    {
-      "id": "e785.1",
-      "content": "Build skdlr-service daemon with internal scheduler loop",
-      "status": "pending",
+      "status": "completed",
       "priority": "high"
     },
     {
       "id": "e785.4",
       "content": "Scheduler core: atomic claim + lease renewal + stuck-job recovery",
-      "status": "pending",
+      "status": "completed",
       "priority": "high"
     },
     {
       "id": "e785.5",
       "content": "Scheduler core: retry/backoff/dead-letter with idempotency keys",
-      "status": "pending",
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "e785.1",
+      "content": "Build skdlr-service daemon with internal scheduler loop",
+      "status": "in_progress",
       "priority": "high"
     },
     {
@@ -61,5 +61,5 @@
       "priority": "medium"
     }
   ],
-  "updated_at": "2026-03-25T19:43:38.752Z"
+  "updated_at": "2026-03-25T19:48:22.543Z"
 }

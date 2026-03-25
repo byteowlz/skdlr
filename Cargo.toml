@@ -6,6 +6,7 @@ members = [
     "crates/skdlr-tui",
     "crates/skdlr-mcp",
     "crates/skdlr-api",
+    "crates/skdlr-service",
 ]
 
 [workspace.package]

@@ -1,0 +1,23 @@
+[package]
+name = "skdlr-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "skdlr scheduler daemon — runs the internal scheduler loop"
+
+[[bin]]
+name = "skdlr-service"
+path = "src/main.rs"
+
+[dependencies]
+skdlr-core.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

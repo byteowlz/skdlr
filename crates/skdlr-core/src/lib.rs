@@ -8,18 +8,22 @@
 
 pub mod backend;
 pub mod config;
+pub mod dispatcher;
 pub mod error;
 pub mod models;
 pub mod paths;
+pub mod scheduler;
 pub mod storage;
 pub mod validation;
 
 pub use config::SkdlrConfig;
+pub use dispatcher::{DispatchResult, Dispatcher, LocalDispatcher};
 pub use error::{Error, Result};
 pub use models::{
-    JobInstance, JobState, Run, RunStatus, Schedule, ScheduleKind, ScheduleStatus,
-    DEFAULT_TENANT_ID,
+    DEFAULT_TENANT_ID, JobInstance, JobState, Run, RunStatus, Schedule, ScheduleKind,
+    ScheduleStatus,
 };
+pub use scheduler::{Scheduler, SchedulerConfig};
 pub use storage::Storage;
 
 /// Application name used for config directories and environment prefix.

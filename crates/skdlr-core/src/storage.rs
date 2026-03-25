@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use crate::error::{Error, Result};
 use crate::models::{
-    JobInstance, JobState, Run, RunStatus, Schedule, ScheduleKind, ScheduleStatus,
-    DEFAULT_TENANT_ID,
+    DEFAULT_TENANT_ID, JobInstance, JobState, Run, RunStatus, Schedule, ScheduleKind,
+    ScheduleStatus,
 };
 use crate::validation::validate_schedule;
 
@@ -418,11 +418,7 @@ impl Storage {
                  ORDER BY scheduled_at ASC
                  LIMIT 1
              ) AND (state = 'queued' OR state = 'retrying')",
-            params![
-                now.to_rfc3339(),
-                worker_id,
-                lease_expires.to_rfc3339(),
-            ],
+            params![now.to_rfc3339(), worker_id, lease_expires.to_rfc3339(),],
         )?;
 
         if count == 0 {
@@ -475,18 +471,17 @@ impl Storage {
     /// Marks a job instance as succeeded.
     pub fn complete_job(&self, instance_id: &Uuid, exit_code: i32) -> Result<bool> {
         let now = Utc::now();
-        let state = if exit_code == 0 { "succeeded" } else { "failed" };
+        let state = if exit_code == 0 {
+            "succeeded"
+        } else {
+            "failed"
+        };
 
         let count = self.conn.execute(
             "UPDATE job_instances
              SET state = ?1, completed_at = ?2, exit_code = ?3, updated_at = ?2
              WHERE id = ?4 AND state = 'running'",
-            params![
-                state,
-                now.to_rfc3339(),
-                exit_code,
-                instance_id.to_string(),
-            ],
+            params![state, now.to_rfc3339(), exit_code, instance_id.to_string(),],
         )?;
 
         Ok(count > 0)
@@ -565,11 +560,7 @@ impl Storage {
     }
 
     /// Gets job instances for a schedule.
-    pub fn get_job_instances(
-        &self,
-        schedule_id: &Uuid,
-        limit: usize,
-    ) -> Result<Vec<JobInstance>> {
+    pub fn get_job_instances(&self, schedule_id: &Uuid, limit: usize) -> Result<Vec<JobInstance>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, schedule_id, tenant_id, idempotency_key, state, scheduled_at,
                 claimed_at, claimed_by, lease_expires_at, started_at, completed_at,
@@ -616,11 +607,7 @@ impl Storage {
     }
 
     /// Gets dead-lettered job instances for a tenant.
-    pub fn get_dead_letter_jobs(
-        &self,
-        tenant_id: &str,
-        limit: usize,
-    ) -> Result<Vec<JobInstance>> {
+    pub fn get_dead_letter_jobs(&self, tenant_id: &str, limit: usize) -> Result<Vec<JobInstance>> {
         self.get_job_instances_by_state(tenant_id, JobState::DeadLetter, limit)
     }
 
@@ -756,25 +743,17 @@ impl Storage {
             idempotency_key,
             state,
             scheduled_at: parse_datetime(&scheduled_at, 5)?,
-            claimed_at: claimed_at
-                .map(|v| parse_datetime(&v, 6))
-                .transpose()?,
+            claimed_at: claimed_at.map(|v| parse_datetime(&v, 6)).transpose()?,
             claimed_by,
             lease_expires_at: lease_expires_at
                 .map(|v| parse_datetime(&v, 8))
                 .transpose()?,
-            started_at: started_at
-                .map(|v| parse_datetime(&v, 9))
-                .transpose()?,
-            completed_at: completed_at
-                .map(|v| parse_datetime(&v, 10))
-                .transpose()?,
+            started_at: started_at.map(|v| parse_datetime(&v, 9)).transpose()?,
+            completed_at: completed_at.map(|v| parse_datetime(&v, 10)).transpose()?,
             exit_code,
             attempt,
             max_attempts,
-            next_retry_at: next_retry_at
-                .map(|v| parse_datetime(&v, 14))
-                .transpose()?,
+            next_retry_at: next_retry_at.map(|v| parse_datetime(&v, 14)).transpose()?,
             last_error,
             created_at: parse_datetime(&created_at, 16)?,
             updated_at: parse_datetime(&updated_at, 17)?,
@@ -842,10 +821,8 @@ mod tests {
     fn test_tenant_isolation() {
         let storage = Storage::in_memory().unwrap();
 
-        let s1 = Schedule::new("backup", "0 * * * *", "echo a")
-            .with_tenant("tenant-a");
-        let s2 = Schedule::new("backup", "0 * * * *", "echo b")
-            .with_tenant("tenant-b");
+        let s1 = Schedule::new("backup", "0 * * * *", "echo a").with_tenant("tenant-a");
+        let s2 = Schedule::new("backup", "0 * * * *", "echo b").with_tenant("tenant-b");
 
         storage.save_schedule(&s1).unwrap();
         storage.save_schedule(&s2).unwrap();
@@ -909,8 +886,7 @@ mod tests {
     fn test_job_instance_lifecycle() {
         let storage = Storage::in_memory().unwrap();
 
-        let schedule = Schedule::new("test", "0 * * * *", "echo hello")
-            .with_retries(2, 30);
+        let schedule = Schedule::new("test", "0 * * * *", "echo hello").with_retries(2, 30);
         storage.save_schedule(&schedule).unwrap();
 
         // Enqueue
@@ -945,8 +921,7 @@ mod tests {
     fn test_job_retry_and_dead_letter() {
         let storage = Storage::in_memory().unwrap();
 
-        let schedule = Schedule::new("retry-test", "0 * * * *", "echo fail")
-            .with_retries(2, 10);
+        let schedule = Schedule::new("retry-test", "0 * * * *", "echo fail").with_retries(2, 10);
         storage.save_schedule(&schedule).unwrap();
 
         let scheduled_at = Utc::now();
@@ -963,13 +938,16 @@ mod tests {
 
         // Claim and fail attempt 2
         // Simulate retry time passing by directly updating next_retry_at
-        storage.conn.execute(
-            "UPDATE job_instances SET next_retry_at = ?1 WHERE id = ?2",
-            params![
-                (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339(),
-                claimed.id.to_string(),
-            ],
-        ).unwrap();
+        storage
+            .conn
+            .execute(
+                "UPDATE job_instances SET next_retry_at = ?1 WHERE id = ?2",
+                params![
+                    (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339(),
+                    claimed.id.to_string(),
+                ],
+            )
+            .unwrap();
 
         let claimed2 = storage
             .claim_job("worker-1", chrono::Duration::minutes(5))
@@ -979,13 +957,16 @@ mod tests {
         assert_eq!(state, JobState::Retrying);
 
         // Claim and fail attempt 3 — should dead-letter
-        storage.conn.execute(
-            "UPDATE job_instances SET next_retry_at = ?1 WHERE id = ?2",
-            params![
-                (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339(),
-                claimed.id.to_string(),
-            ],
-        ).unwrap();
+        storage
+            .conn
+            .execute(
+                "UPDATE job_instances SET next_retry_at = ?1 WHERE id = ?2",
+                params![
+                    (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339(),
+                    claimed.id.to_string(),
+                ],
+            )
+            .unwrap();
 
         let claimed3 = storage
             .claim_job("worker-1", chrono::Duration::minutes(5))
@@ -1017,13 +998,16 @@ mod tests {
             .unwrap();
 
         // Set lease to past
-        storage.conn.execute(
-            "UPDATE job_instances SET lease_expires_at = ?1 WHERE id = ?2",
-            params![
-                (Utc::now() - chrono::Duration::seconds(60)).to_rfc3339(),
-                claimed.id.to_string(),
-            ],
-        ).unwrap();
+        storage
+            .conn
+            .execute(
+                "UPDATE job_instances SET lease_expires_at = ?1 WHERE id = ?2",
+                params![
+                    (Utc::now() - chrono::Duration::seconds(60)).to_rfc3339(),
+                    claimed.id.to_string(),
+                ],
+            )
+            .unwrap();
 
         // Recover
         let recovered = storage.recover_stuck_jobs().unwrap();
