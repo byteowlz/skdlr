@@ -3,13 +3,13 @@
     {
       "id": "lint",
       "content": "Harden clippy rules, linting, ast-grep from oqto reference",
-      "status": "in_progress",
+      "status": "completed",
       "priority": "high"
     },
     {
       "id": "e785.2",
       "content": "Schema: add tenant_id and change unique key to (tenant_id, name)",
-      "status": "pending",
+      "status": "in_progress",
       "priority": "high"
     },
     {
@@ -61,5 +61,5 @@
       "priority": "medium"
     }
   ],
-  "updated_at": "2026-03-25T19:27:24.892Z"
+  "updated_at": "2026-03-25T19:43:38.752Z"
 }

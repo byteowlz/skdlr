@@ -74,11 +74,18 @@ impl std::fmt::Display for ScheduleKind {
     }
 }
 
+/// Default tenant ID for single-user mode.
+pub const DEFAULT_TENANT_ID: &str = "default";
+
 /// A scheduled task definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Schedule {
     /// Unique identifier.
     pub id: Uuid,
+
+    /// Tenant identifier for multi-user isolation.
+    #[serde(default = "default_tenant_id")]
+    pub tenant_id: String,
 
     /// Human-readable name (used as identifier in CLI).
     pub name: String,
@@ -116,6 +123,22 @@ pub struct Schedule {
 
     /// Backend-specific identifier (e.g., systemd timer name).
     pub backend_id: Option<String>,
+
+    /// Maximum number of retries on failure (0 = no retry).
+    #[serde(default)]
+    pub max_retries: u32,
+
+    /// Backoff base delay in seconds between retries.
+    #[serde(default = "default_retry_delay_secs")]
+    pub retry_delay_secs: u64,
+}
+
+fn default_tenant_id() -> String {
+    DEFAULT_TENANT_ID.to_string()
+}
+
+fn default_retry_delay_secs() -> u64 {
+    30
 }
 
 impl Schedule {
@@ -128,6 +151,7 @@ impl Schedule {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
+            tenant_id: DEFAULT_TENANT_ID.to_string(),
             name: name.into(),
             description: None,
             kind: ScheduleKind::recurring(cron_expr),
@@ -140,6 +164,8 @@ impl Schedule {
             updated_at: now,
             paused_until: None,
             backend_id: None,
+            max_retries: 0,
+            retry_delay_secs: 30,
         }
     }
 
@@ -152,6 +178,7 @@ impl Schedule {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
+            tenant_id: DEFAULT_TENANT_ID.to_string(),
             name: name.into(),
             description: None,
             kind: ScheduleKind::one_off(run_at),
@@ -164,7 +191,22 @@ impl Schedule {
             updated_at: now,
             paused_until: None,
             backend_id: None,
+            max_retries: 0,
+            retry_delay_secs: 30,
         }
+    }
+
+    /// Sets the tenant ID.
+    pub fn with_tenant(mut self, tenant_id: impl Into<String>) -> Self {
+        self.tenant_id = tenant_id.into();
+        self
+    }
+
+    /// Sets retry configuration.
+    pub fn with_retries(mut self, max_retries: u32, delay_secs: u64) -> Self {
+        self.max_retries = max_retries;
+        self.retry_delay_secs = delay_secs;
+        self
     }
 
     /// Sets the working directory.
@@ -293,6 +335,155 @@ impl Run {
         self.completed_at = Some(Utc::now());
         self.status = RunStatus::Failed;
         self.error = Some(error.into());
+    }
+}
+
+/// A job instance represents a single scheduled execution tracked through its lifecycle.
+///
+/// Job instances provide atomic claim semantics, lease-based ownership,
+/// retry tracking, and dead-letter handling for reliable execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobInstance {
+    /// Unique identifier.
+    pub id: Uuid,
+
+    /// The schedule this instance belongs to.
+    pub schedule_id: Uuid,
+
+    /// Tenant identifier for multi-user isolation.
+    pub tenant_id: String,
+
+    /// Idempotency key to prevent duplicate execution.
+    /// Format: `{schedule_id}:{scheduled_at_rfc3339}`
+    pub idempotency_key: String,
+
+    /// Current lifecycle state.
+    pub state: JobState,
+
+    /// When this instance was scheduled to run.
+    pub scheduled_at: DateTime<Utc>,
+
+    /// When this instance was claimed by a worker.
+    pub claimed_at: Option<DateTime<Utc>>,
+
+    /// Worker ID that claimed this instance.
+    pub claimed_by: Option<String>,
+
+    /// Lease expiry — if now > `lease_expires_at`, the job is considered stuck.
+    pub lease_expires_at: Option<DateTime<Utc>>,
+
+    /// When execution started.
+    pub started_at: Option<DateTime<Utc>>,
+
+    /// When execution completed (succeeded, failed, or dead-lettered).
+    pub completed_at: Option<DateTime<Utc>>,
+
+    /// Exit code (if completed).
+    pub exit_code: Option<i32>,
+
+    /// Current retry attempt (0 = first attempt).
+    pub attempt: u32,
+
+    /// Maximum retries allowed (copied from schedule at creation).
+    pub max_attempts: u32,
+
+    /// When the next retry should be attempted (if retrying).
+    pub next_retry_at: Option<DateTime<Utc>>,
+
+    /// Error message from the last attempt.
+    pub last_error: Option<String>,
+
+    /// When this record was created.
+    pub created_at: DateTime<Utc>,
+
+    /// When this record was last updated.
+    pub updated_at: DateTime<Utc>,
+}
+
+impl JobInstance {
+    /// Creates a new queued job instance for a schedule.
+    pub fn new(schedule: &Schedule, scheduled_at: DateTime<Utc>) -> Self {
+        let now = Utc::now();
+        let idempotency_key = format!("{}:{}", schedule.id, scheduled_at.to_rfc3339());
+        Self {
+            id: Uuid::new_v4(),
+            schedule_id: schedule.id,
+            tenant_id: schedule.tenant_id.clone(),
+            idempotency_key,
+            state: JobState::Queued,
+            scheduled_at,
+            claimed_at: None,
+            claimed_by: None,
+            lease_expires_at: None,
+            started_at: None,
+            completed_at: None,
+            exit_code: None,
+            attempt: 0,
+            max_attempts: schedule.max_retries + 1, // first attempt + retries
+            next_retry_at: None,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Returns true if the lease has expired.
+    pub fn is_lease_expired(&self) -> bool {
+        self.lease_expires_at
+            .is_some_and(|expires| Utc::now() > expires)
+    }
+
+    /// Returns true if this instance can be retried.
+    pub fn can_retry(&self) -> bool {
+        self.attempt < self.max_attempts
+    }
+
+    /// Calculate exponential backoff delay for the current attempt.
+    pub fn backoff_delay(&self, base_delay_secs: u64) -> chrono::Duration {
+        let delay_secs = base_delay_secs * 2u64.saturating_pow(self.attempt.saturating_sub(1));
+        // Cap at 1 hour
+        let capped = delay_secs.min(3600);
+        chrono::Duration::seconds(capped as i64)
+    }
+}
+
+/// Lifecycle state of a job instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobState {
+    /// Waiting to be claimed by a worker.
+    Queued,
+
+    /// Claimed by a worker, execution in progress.
+    Running,
+
+    /// Execution completed successfully.
+    Succeeded,
+
+    /// Execution failed, may be retried.
+    Failed,
+
+    /// Waiting to be retried after a failure.
+    Retrying,
+
+    /// All retry attempts exhausted — moved to dead letter.
+    DeadLetter,
+
+    /// Manually cancelled.
+    Cancelled,
+}
+
+impl std::fmt::Display for JobState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Queued => write!(f, "queued"),
+            Self::Running => write!(f, "running"),
+            Self::Succeeded => write!(f, "succeeded"),
+            Self::Failed => write!(f, "failed"),
+            Self::Retrying => write!(f, "retrying"),
+            Self::DeadLetter => write!(f, "dead_letter"),
+            Self::Cancelled => write!(f, "cancelled"),
+        }
     }
 }
 
