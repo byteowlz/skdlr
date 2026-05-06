@@ -207,9 +207,28 @@ fn wrapper_args_has_delimiter(args: &[String]) -> bool {
 
 /// Renders a schedule's command as a single string for systemd `ExecStart`.
 /// This is a convenience wrapper around `render_wrapped_command`.
+///
+/// For systemd ExecStart, we need to be careful about quoting:
+/// - When using /bin/sh -c 'script', the 'script' is passed as a single argument
+/// - The command and its arguments should be properly shell-escaped within that script
+/// - We use exec to replace the shell process with the actual command
 pub fn render_exec_start(schedule: &Schedule, config: &SkdlrConfig) -> Result<String> {
     let (program, args) = render_wrapped_command(schedule, config)?;
 
+    // If the program is already /bin/sh, we're using shell execution
+    // The args will be: ["-c", "actual_script"]
+    // We need to build: /bin/sh -c 'actual_script'
+    // Where actual_script is the args after -c, properly escaped
+
+    if program == "/bin/sh" && args.first().map(|s| s.as_str()) == Some("-c") {
+        // The args are ["-c", "script_content"]
+        // We want: ExecStart=/bin/sh -c 'script_content'
+        let script_content = args.get(1).cloned().unwrap_or_default();
+        let escaped = script_content.replace('\'', "'\\''");
+        return Ok(format!("ExecStart=/bin/sh -c '{escaped}'"));
+    }
+
+    // For other programs, build: /bin/sh -c 'program args...'
     // Simple shell escaping for single quotes
     let escaped_program = program.replace('\'', "'\\''");
     let escaped_args = args
@@ -218,7 +237,7 @@ pub fn render_exec_start(schedule: &Schedule, config: &SkdlrConfig) -> Result<St
         .collect::<Vec<_>>()
         .join(" ");
 
-    Ok(format!("/bin/sh -c '{escaped_program} {escaped_args}'"))
+    Ok(format!("ExecStart=/bin/sh -c '{escaped_program} {escaped_args}'"))
 }
 
 /// Renders arguments for launchd `ProgramArguments`.

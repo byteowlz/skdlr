@@ -2,15 +2,6 @@
 
 ## Open
 
-### [skdlr-rz76] systemd service files missing ExecStart= prefix (P1, bug)
-## Bug Summary
-
-skdlr v0.2.1 generates invalid systemd service unit files. The "ExecStart=" directive prefix is missing from the generated `[Service]` section, causing systemd to reject the unit with "bad unit file setting".
-
-## Environment
-...
-
-
 ### [skdlr-vq7g.4] Add durability test matrix (crash, contention, replay) (P1, task)
 Integration tests for crash recovery, WAL contention, lease expiry recovery, and transition invariants.
 
@@ -31,6 +22,7 @@ Update docs with state model, retry/idempotency semantics, and operational tunin
 
 ## Closed
 
+- [skdlr-rz76] systemd service files missing ExecStart= prefix (closed 2026-05-06)
 - [skdlr-e785] Container-native multi-user scheduler mode (central schedule authority + per-user execution) (closed 2026-03-25)
 - [skdlr-e785.8] Docs: runtime-mode guide (host-systemd vs container mode) and migration notes (closed 2026-03-25)
 - [skdlr-e785.9] Tests: multi-tenant isolation, duplicate-delivery idempotency, retry/lease behavior (closed 2026-03-25)

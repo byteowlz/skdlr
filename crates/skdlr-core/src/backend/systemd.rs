@@ -67,7 +67,7 @@ impl SystemdBackend {
             Err(e) => {
                 log::error!("Failed to render wrapped command: {}", e);
                 // Fallback to direct execution
-                format!("/bin/sh -c '{}'", schedule.command.replace('\'', "'\\''"))
+                format!("ExecStart=/bin/sh -c '{}'", schedule.command.replace('\'', "'\\''"))
             }
         };
 
