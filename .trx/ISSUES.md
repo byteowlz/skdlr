@@ -2,6 +2,24 @@
 
 ## Open
 
+### [skdlr-jrby.1] Typed SandboxSpec on Schedule + structured wrapper handoff (P1, feature)
+Replace the ad-hoc `executor.wrapper` + `SKDLR_OCTO_MODE` env-var contract with a typed, persisted `SandboxSpec` field on `Schedule`, delivered to the wrapper as structured JSON instead of argv string-stuffing.
+
+## Why
+
+oqto's sandbox is layered (bubblewrap/sandbox-exec, oqto-guard FUSE, eavs network proxy) and configured via rich data: deny_read paths, allow_write paths, isolate_network/pid, profile name, per-workspace overrides. None of that fits today's wrapper contract:
+...
+
+
+### [skdlr-jrby] oqto fit: sandboxing, remote runners, embedding surface (P1, epic)
+Make skdlr a first-class scheduling backend for oqto, with structured sandbox handoff, remote runner dispatch, and a clean library/API embedding surface (no more CLI text scraping).
+
+## Context
+
+Today oqto integrates with skdlr by shelling out to the `skdlr` CLI and parsing text output (see oqto_refactor backend/crates/oqto/src/api/handlers/misc.rs:200-400). The integration works for basic scheduling but blocks every direction oqto is heading:
+...
+
+
 ### [skdlr-vq7g.4] Add durability test matrix (crash, contention, replay) (P1, task)
 Integration tests for crash recovery, WAL contention, lease expiry recovery, and transition invariants.
 
@@ -22,6 +40,8 @@ Update docs with state model, retry/idempotency semantics, and operational tunin
 
 ## Closed
 
+- [skdlr-rrtr] systemd timer-triggered runs are not recorded in skdlr run history (closed 2026-05-07)
+- [skdlr-c4f5] systemd backend generates broken ExecStart when command includes shell wrapper (closed 2026-05-07)
 - [skdlr-rz76] systemd service files missing ExecStart= prefix (closed 2026-05-06)
 - [skdlr-e785] Container-native multi-user scheduler mode (central schedule authority + per-user execution) (closed 2026-03-25)
 - [skdlr-e785.8] Docs: runtime-mode guide (host-systemd vs container mode) and migration notes (closed 2026-03-25)
