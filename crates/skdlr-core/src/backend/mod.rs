@@ -221,9 +221,13 @@ pub fn render_exec_start(schedule: &Schedule, config: &SkdlrConfig) -> Result<St
     // Where actual_script is the args after -c, properly escaped
 
     if program == "/bin/sh" && args.first().map(|s| s.as_str()) == Some("-c") {
-        // The args are ["-c", "script_content"]
-        // We want: ExecStart=/bin/sh -c 'script_content'
-        let script_content = args.get(1).cloned().unwrap_or_default();
+        // The args are usually ["-c", "script_content"], but wrapper configurations
+        // may append additional tokens. Preserve the entire script payload.
+        let script_content = if args.len() <= 1 {
+            String::new()
+        } else {
+            args[1..].join(" ")
+        };
         let escaped = script_content.replace('\'', "'\\''");
         return Ok(format!("ExecStart=/bin/sh -c '{escaped}'"));
     }
@@ -246,4 +250,33 @@ pub fn render_launchd_args(schedule: &Schedule, config: &SkdlrConfig) -> Result<
     let mut full_args = vec![program];
     full_args.extend(args);
     Ok(full_args)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_exec_start_direct_shell_exec() {
+        let schedule = Schedule::new("test", "* * * * *", "/tmp/run-me.sh");
+        let config = SkdlrConfig::default();
+
+        let rendered = render_exec_start(&schedule, &config).unwrap();
+        assert_eq!(rendered, "ExecStart=/bin/sh -c 'exec /tmp/run-me.sh'");
+    }
+
+    #[test]
+    fn render_exec_start_preserves_shell_payload_tokens() {
+        let schedule = Schedule::new("test", "* * * * *", "/tmp/run-me.sh");
+        let mut config = SkdlrConfig::default();
+        config.executor.wrapper = Some("/bin/sh".to_string());
+        config.executor.wrapper_args = vec!["-c".to_string(), "exec".to_string()];
+
+        let rendered = render_exec_start(&schedule, &config).unwrap();
+        assert_eq!(
+            rendered,
+            "ExecStart=/bin/sh -c 'exec -- /tmp/run-me.sh'"
+        );
+    }
 }

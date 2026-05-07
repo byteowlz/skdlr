@@ -43,7 +43,7 @@ async fn run() -> Result<()> {
         Command::Enable(cmd) => handle_enable(&storage, backend.as_ref(), cmd).await,
         Command::Disable(cmd) => handle_disable(&storage, backend.as_ref(), cmd).await,
         Command::Run(cmd) => handle_run(&storage, backend.as_ref(), cmd).await,
-        Command::Logs(cmd) => handle_logs(&storage, &cmd),
+        Command::Logs(cmd) => handle_logs(&storage, backend.as_ref(), &cmd).await,
         Command::Status => handle_status(&storage, backend.as_ref()).await,
         Command::Next => handle_next(&storage, backend.as_ref()).await,
         Command::Backend => handle_backend(backend.as_ref()),
@@ -1029,12 +1029,21 @@ async fn handle_run(storage: &Storage, backend: &dyn Backend, cmd: RunCommand) -
     Ok(())
 }
 
-fn handle_logs(storage: &Storage, cmd: &LogsCommand) -> Result<()> {
+async fn handle_logs(storage: &Storage, backend: &dyn Backend, cmd: &LogsCommand) -> Result<()> {
     let schedule = storage
         .get_schedule_by_name(&cmd.name)?
         .ok_or_else(|| anyhow::anyhow!("schedule '{}' not found", cmd.name))?;
 
-    let runs = storage.get_runs(&schedule.id, cmd.last)?;
+    let mut runs = storage.get_runs(&schedule.id, cmd.last)?;
+
+    // Native schedulers (e.g., systemd timers) can produce executions that are
+    // not persisted in the local runs table yet. Fall back to backend logs.
+    if runs.len() < cmd.last {
+        let backend_runs = backend.get_runs(&schedule, cmd.last).await.unwrap_or_default();
+        runs.extend(backend_runs);
+        runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        runs.truncate(cmd.last);
+    }
 
     if runs.is_empty() {
         println!("No runs recorded for '{}'.", cmd.name);

@@ -325,23 +325,82 @@ impl Backend for SystemdBackend {
         limit: usize,
     ) -> BoxFuture<'a, Result<Vec<Run>>> {
         Box::pin(async move {
-            // Query journalctl for past runs
+            // Parse journal output for this service into Run records.
+            // We pair "Starting skdlr:" with the next "Finished skdlr:" / "Failed" entry.
             let service = self.service_name(schedule);
-            let _output = Command::new("journalctl")
+            let output = Command::new("journalctl")
                 .args([
                     "--user",
                     "-u",
                     &service,
-                    "--output=json",
+                    "--output=short-iso",
+                    "--no-pager",
                     "-n",
-                    &limit.to_string(),
+                    &(limit.saturating_mul(8)).to_string(),
                 ])
                 .output()
                 .await?;
 
-            // TODO: Parse journalctl JSON output into Run records
-            // For now, return empty vec - this needs proper implementation
-            Ok(Vec::new())
+            if !output.status.success() {
+                return Ok(Vec::new());
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut runs: Vec<Run> = Vec::new();
+            let mut pending_start: Option<chrono::DateTime<Utc>> = None;
+
+            for line in stdout.lines() {
+                let ts = line
+                    .split_whitespace()
+                    .next()
+                    .and_then(|raw| chrono::DateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%z").ok())
+                    .map(|dt| dt.with_timezone(&Utc));
+
+                let is_systemd_line = line.contains(" systemd[");
+
+                if is_systemd_line && line.contains("Starting skdlr:") {
+                    pending_start = ts;
+                    continue;
+                }
+
+                if is_systemd_line && line.contains("Finished skdlr:") {
+                    let mut run = Run::new(schedule.id, false);
+                    if let Some(started_at) = pending_start.take().or(ts) {
+                        run.started_at = started_at;
+                    }
+                    run.completed_at = ts.or(Some(run.started_at));
+                    run.exit_code = Some(0);
+                    run.status = crate::models::RunStatus::Succeeded;
+                    runs.push(run);
+                    if runs.len() >= limit {
+                        break;
+                    }
+                    continue;
+                }
+
+                if is_systemd_line
+                    && (line.contains("Failed with result")
+                        || line.contains("Failed to start skdlr:")
+                        || line.contains("Main process exited"))
+                {
+                    let mut run = Run::new(schedule.id, false);
+                    if let Some(started_at) = pending_start.take().or(ts) {
+                        run.started_at = started_at;
+                    }
+                    run.completed_at = ts.or(Some(run.started_at));
+                    run.exit_code = Some(1);
+                    run.status = crate::models::RunStatus::Failed;
+                    run.error = Some(line.to_string());
+                    runs.push(run);
+                    if runs.len() >= limit {
+                        break;
+                    }
+                }
+            }
+
+            runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+            runs.truncate(limit);
+            Ok(runs)
         })
     }
 
