@@ -119,18 +119,29 @@ jobs:
   update-homebrew:
     name: Update Homebrew Formula
     needs: release
-    if: ${{ hashFiles('dist/homebrew/skdlr.rb') != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check Homebrew formula exists
+        id: check_file
+        run: |
+          if [[ -f dist/homebrew/skdlr.rb ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "dist/homebrew/skdlr.rb not found; skipping Homebrew update"
+          fi
+
       - name: Download checksums
+        if: steps.check_file.outputs.present == 'true'
         run: |
           gh release download ${{ github.ref_name }} -p checksums-sha256.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Homebrew formula
+        if: steps.check_file.outputs.present == 'true'
         run: |
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
@@ -147,6 +158,7 @@ jobs:
           sed -i "s/LINUX_ARM_SHA256/${LINUX_ARM_SHA}/" dist/homebrew/skdlr.rb
 
       - name: Upload updated formula
+        if: steps.check_file.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: homebrew-formula
@@ -155,18 +167,29 @@ jobs:
   update-scoop:
     name: Update Scoop Manifest
     needs: release
-    if: ${{ hashFiles('dist/scoop/skdlr.json') != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check Scoop manifest exists
+        id: check_file
+        run: |
+          if [[ -f dist/scoop/skdlr.json ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "dist/scoop/skdlr.json not found; skipping Scoop update"
+          fi
+
       - name: Download checksums
+        if: steps.check_file.outputs.present == 'true'
         run: |
           gh release download ${{ github.ref_name }} -p checksums-sha256.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Scoop manifest
+        if: steps.check_file.outputs.present == 'true'
         run: |
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
@@ -186,6 +209,7 @@ jobs:
           mv dist/scoop/skdlr.json.tmp dist/scoop/skdlr.json
 
       - name: Upload updated manifest
+        if: steps.check_file.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: scoop-manifest
@@ -194,18 +218,29 @@ jobs:
   update-aur:
     name: Update AUR Package
     needs: release
-    if: ${{ hashFiles('dist/aur/PKGBUILD-bin') != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check AUR files exist
+        id: check_file
+        run: |
+          if [[ -f dist/aur/PKGBUILD-bin ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "dist/aur/PKGBUILD-bin not found; skipping AUR update"
+          fi
+
       - name: Download checksums
+        if: steps.check_file.outputs.present == 'true'
         run: |
           gh release download ${{ github.ref_name }} -p checksums-sha256.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update PKGBUILD
+        if: steps.check_file.outputs.present == 'true'
         run: |
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
@@ -216,6 +251,7 @@ jobs:
           sed -i "s/sha256sums=.*/sha256sums=('${LINUX_X86_SHA}')/" dist/aur/PKGBUILD-bin
 
       - name: Generate .SRCINFO
+        if: steps.check_file.outputs.present == 'true'
         run: |
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
@@ -239,6 +275,7 @@ jobs:
           EOF
 
       - name: Upload updated PKGBUILD
+        if: steps.check_file.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: aur-package
