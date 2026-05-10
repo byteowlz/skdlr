@@ -93,11 +93,11 @@ check_interval_secs = 60
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                         skdlr                                │
+│                         skdlr                               │
 ├─────────────────────────────────────────────────────────────┤
 │  CLI / TUI / MCP Server / Library                           │
 ├─────────────────────────────────────────────────────────────┤
-│                    Backend Abstraction                       │
+│                    Backend Abstraction                      │
 ├───────────┬───────────┬──────────────┬──────────────────────┤
 │  systemd  │  launchd  │  schtasks    │  internal            │
 │  (Linux)  │  (macOS)  │  (Windows)   │  (fallback)          │

@@ -1,0 +1,29 @@
+{
+  "todos": [
+    {
+      "id": "d09ffd73",
+      "content": "Determine current version and bump target",
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "5bd6fd6c",
+      "content": "Apply version bump in Rust manifests",
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "deaabfa6",
+      "content": "Commit changes with clear message",
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "963c2066",
+      "content": "Create git tag for new version",
+      "status": "completed",
+      "priority": "high"
+    }
+  ],
+  "updated_at": "2026-05-07T18:13:41.248Z"
+}
