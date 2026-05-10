@@ -119,6 +119,7 @@ jobs:
   update-homebrew:
     name: Update Homebrew Formula
     needs: release
+    if: ${{ hashFiles('dist/homebrew/skdlr.rb') != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -154,6 +155,7 @@ jobs:
   update-scoop:
     name: Update Scoop Manifest
     needs: release
+    if: ${{ hashFiles('dist/scoop/skdlr.json') != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -192,6 +194,7 @@ jobs:
   update-aur:
     name: Update AUR Package
     needs: release
+    if: ${{ hashFiles('dist/aur/PKGBUILD-bin') != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
