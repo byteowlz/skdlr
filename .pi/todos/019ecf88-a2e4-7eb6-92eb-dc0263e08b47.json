@@ -1,0 +1,23 @@
+{
+  "todos": [
+    {
+      "id": "6e619512",
+      "content": "Inspect skdlr logging/run recording implementation",
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "e67b1390",
+      "content": "Check backend behavior for scheduled jobs vs metadata storage",
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "ca148b6e",
+      "content": "Explain why no runs logged and propose fix",
+      "status": "completed",
+      "priority": "medium"
+    }
+  ],
+  "updated_at": "2026-06-16T08:29:10.150Z"
+}
