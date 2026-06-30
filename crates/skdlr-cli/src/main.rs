@@ -1039,7 +1039,10 @@ async fn handle_logs(storage: &Storage, backend: &dyn Backend, cmd: &LogsCommand
     // Native schedulers (e.g., systemd timers) can produce executions that are
     // not persisted in the local runs table yet. Fall back to backend logs.
     if runs.len() < cmd.last {
-        let backend_runs = backend.get_runs(&schedule, cmd.last).await.unwrap_or_default();
+        let backend_runs = backend
+            .get_runs(&schedule, cmd.last)
+            .await
+            .unwrap_or_default();
         runs.extend(backend_runs);
         runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
         runs.truncate(cmd.last);

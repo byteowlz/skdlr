@@ -241,7 +241,9 @@ pub fn render_exec_start(schedule: &Schedule, config: &SkdlrConfig) -> Result<St
         .collect::<Vec<_>>()
         .join(" ");
 
-    Ok(format!("ExecStart=/bin/sh -c '{escaped_program} {escaped_args}'"))
+    Ok(format!(
+        "ExecStart=/bin/sh -c '{escaped_program} {escaped_args}'"
+    ))
 }
 
 /// Renders arguments for launchd `ProgramArguments`.
@@ -274,9 +276,6 @@ mod tests {
         config.executor.wrapper_args = vec!["-c".to_string(), "exec".to_string()];
 
         let rendered = render_exec_start(&schedule, &config).unwrap();
-        assert_eq!(
-            rendered,
-            "ExecStart=/bin/sh -c 'exec -- /tmp/run-me.sh'"
-        );
+        assert_eq!(rendered, "ExecStart=/bin/sh -c 'exec -- /tmp/run-me.sh'");
     }
 }

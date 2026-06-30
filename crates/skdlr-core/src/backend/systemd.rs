@@ -67,7 +67,10 @@ impl SystemdBackend {
             Err(e) => {
                 log::error!("Failed to render wrapped command: {}", e);
                 // Fallback to direct execution
-                format!("ExecStart=/bin/sh -c '{}'", schedule.command.replace('\'', "'\\''"))
+                format!(
+                    "ExecStart=/bin/sh -c '{}'",
+                    schedule.command.replace('\'', "'\\''")
+                )
             }
         };
 
@@ -353,7 +356,9 @@ impl Backend for SystemdBackend {
                 let ts = line
                     .split_whitespace()
                     .next()
-                    .and_then(|raw| chrono::DateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%z").ok())
+                    .and_then(|raw| {
+                        chrono::DateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%z").ok()
+                    })
                     .map(|dt| dt.with_timezone(&Utc));
 
                 let is_systemd_line = line.contains(" systemd[");
