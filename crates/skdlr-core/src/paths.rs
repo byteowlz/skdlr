@@ -76,38 +76,57 @@ pub fn expand_str_path(text: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(expanded.to_string()))
 }
 
+/// Resolve a base directory using the "option B" rules:
+/// an explicit, absolute `XDG_*` value wins on any OS; otherwise on Windows the
+/// platform variable (`%APPDATA%`/`%LOCALAPPDATA%`) is used, and on every other
+/// OS (including macOS) the unix-relative path under `$HOME` is used.
+fn resolve_base(
+    xdg: Option<PathBuf>,
+    home: Option<PathBuf>,
+    win_dir: Option<PathBuf>,
+    is_windows: bool,
+    unix_rel: &str,
+) -> Option<PathBuf> {
+    if let Some(p) = xdg.filter(|p| p.is_absolute()) {
+        return Some(p);
+    }
+    if is_windows {
+        win_dir
+    } else {
+        home.map(|h| h.join(unix_rel))
+    }
+}
+
+/// Resolve a base directory from the relevant environment variables.
+fn base_dir(xdg_var: &str, unix_rel: &str, win_var: &str) -> Result<PathBuf> {
+    resolve_base(
+        env::var_os(xdg_var).map(PathBuf::from),
+        env::var_os("HOME").map(PathBuf::from),
+        env::var_os(win_var).map(PathBuf::from),
+        cfg!(windows),
+        unix_rel,
+    )
+    .ok_or_else(|| anyhow!("unable to determine base directory ({xdg_var})"))
+}
+
 /// Get the default configuration directory.
 pub fn default_config_dir() -> Result<PathBuf> {
-    if let Some(dir) = env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
-        let mut path = PathBuf::from(dir);
-        path.push(APP_NAME);
-        return Ok(path);
-    }
-
-    if let Some(mut dir) = dirs::config_dir() {
-        dir.push(APP_NAME);
-        return Ok(dir);
-    }
-
-    dirs::home_dir()
-        .map(|home| home.join(".config").join(APP_NAME))
-        .ok_or_else(|| anyhow!("unable to determine configuration directory"))
+    Ok(base_dir("XDG_CONFIG_HOME", ".config", "APPDATA")?.join(APP_NAME))
 }
 
 /// Get the default data directory.
 pub fn default_data_dir() -> Result<PathBuf> {
-    if let Some(dir) = env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
-        return Ok(PathBuf::from(dir).join(APP_NAME));
-    }
+    Ok(base_dir("XDG_DATA_HOME", ".local/share", "APPDATA")?.join(APP_NAME))
+}
 
-    if let Some(mut dir) = dirs::data_dir() {
-        dir.push(APP_NAME);
-        return Ok(dir);
-    }
+/// Get the default state directory.
+pub fn default_state_dir() -> Result<PathBuf> {
+    Ok(base_dir("XDG_STATE_HOME", ".local/state", "LOCALAPPDATA")?.join(APP_NAME))
+}
 
-    dirs::home_dir()
-        .map(|home| home.join(".local").join("share").join(APP_NAME))
-        .ok_or_else(|| anyhow!("unable to determine data directory"))
+/// Get the default cache directory.
+pub fn default_cache_dir() -> Result<PathBuf> {
+    Ok(base_dir("XDG_CACHE_HOME", ".cache", "LOCALAPPDATA")?.join(APP_NAME))
 }
 
 /// Write the default configuration file to the specified path.
@@ -126,4 +145,67 @@ pub fn write_default_config(path: &Path) -> Result<()> {
     body.push_str("\n\n");
     body.push_str(&toml_str);
     fs::write(path, body).with_context(|| format!("writing config file to {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xdg_absolute_wins() {
+        let got = resolve_base(
+            Some(PathBuf::from("/explicit/xdg")),
+            Some(PathBuf::from("/home/user")),
+            Some(PathBuf::from("C:\\AppData")),
+            false,
+            ".config",
+        );
+        assert_eq!(got, Some(PathBuf::from("/explicit/xdg")));
+
+        // Absolute XDG also wins on Windows.
+        let got_win = resolve_base(
+            Some(PathBuf::from("/explicit/xdg")),
+            Some(PathBuf::from("/home/user")),
+            Some(PathBuf::from("C:\\AppData")),
+            true,
+            ".config",
+        );
+        assert_eq!(got_win, Some(PathBuf::from("/explicit/xdg")));
+    }
+
+    #[test]
+    fn unix_uses_home_relative() {
+        let got = resolve_base(
+            None,
+            Some(PathBuf::from("/home/user")),
+            None,
+            false,
+            ".config",
+        );
+        assert_eq!(got, Some(PathBuf::from("/home/user/.config")));
+    }
+
+    #[test]
+    fn windows_uses_win_dir() {
+        let got = resolve_base(
+            None,
+            Some(PathBuf::from("/home/user")),
+            Some(PathBuf::from("C:\\Users\\u\\AppData\\Roaming")),
+            true,
+            ".config",
+        );
+        assert_eq!(got, Some(PathBuf::from("C:\\Users\\u\\AppData\\Roaming")));
+    }
+
+    #[test]
+    fn relative_xdg_is_ignored() {
+        let got = resolve_base(
+            Some(PathBuf::from("relative/xdg")),
+            Some(PathBuf::from("/home/user")),
+            None,
+            false,
+            ".config",
+        );
+        assert_eq!(got, Some(PathBuf::from("/home/user/.config")));
+    }
 }
