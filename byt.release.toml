@@ -1,0 +1,29 @@
+# Release config consumed by `byt release` (ADR-0021).
+# The reusable workflow builds linux-gnu in the byt container (glibc floor) and
+# *-apple-darwin natively on a macOS runner, then combines + publishes.
+#
+# NOTE: the legacy release published Scoop (Windows) manifests; byt has no Scoop
+# backend yet, so Scoop is dropped for now. The new pipeline always emits
+# checksums.txt, which satisfies oqto-4vjy.2.
+[release]
+name = "skdlr"
+lang = "rust"
+bins = ["skdlr", "skdlr-api", "skdlr-mcp", "skdlr-service", "skdlr-tui"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+
+[release.homebrew]
+formula = "skdlr"
+
+[release.aur]
+pkgname = "skdlr-bin"
+pkgdesc = "Cross-platform task scheduler CLI"
+license = "MIT"
+url = "https://github.com/byteowlz/skdlr"
+provides = ["skdlr"]
+conflicts = ["skdlr"]
+depends = ["gcc-libs"]
