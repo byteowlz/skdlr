@@ -1,4 +1,4 @@
-"$schema" = "https://raw.githubusercontent.com/byteowlz/schemas/refs/heads/main/skdlr/skdlr.config.schema.json"
+#:schema https://raw.githubusercontent.com/byteowlz/schemas/refs/heads/main/skdlr/skdlr.config.schema.json
 
 # Example configuration for skdlr.
 # Copy this file to $XDG_CONFIG_HOME/skdlr/config.toml and adjust as needed.
