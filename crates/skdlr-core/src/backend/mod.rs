@@ -208,7 +208,7 @@ fn wrapper_args_has_delimiter(args: &[String]) -> bool {
 /// Renders a schedule's command as a single string for systemd `ExecStart`.
 /// This is a convenience wrapper around `render_wrapped_command`.
 ///
-/// For systemd ExecStart, we need to be careful about quoting:
+/// For systemd `ExecStart`, we need to be careful about quoting:
 /// - When using /bin/sh -c 'script', the 'script' is passed as a single argument
 /// - The command and its arguments should be properly shell-escaped within that script
 /// - We use exec to replace the shell process with the actual command
@@ -220,7 +220,7 @@ pub fn render_exec_start(schedule: &Schedule, config: &SkdlrConfig) -> Result<St
     // We need to build: /bin/sh -c 'actual_script'
     // Where actual_script is the args after -c, properly escaped
 
-    if program == "/bin/sh" && args.first().map(|s| s.as_str()) == Some("-c") {
+    if program == "/bin/sh" && args.first().map(String::as_str) == Some("-c") {
         // The args are usually ["-c", "script_content"], but wrapper configurations
         // may append additional tokens. Preserve the entire script payload.
         let script_content = if args.len() <= 1 {

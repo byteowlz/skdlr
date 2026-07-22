@@ -9,7 +9,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
 use skdlr_core::backend::{Backend, BackendKind, create_backend};
-use skdlr_core::models::{Schedule, ScheduleKind, ScheduleStatus};
+use skdlr_core::models::{Run, Schedule, ScheduleKind, ScheduleStatus};
 use skdlr_core::paths::AppPaths;
 use skdlr_core::validation::{
     validate_cron_expression, validate_run_at, validate_schedule, validate_schedule_name,
@@ -279,14 +279,34 @@ async fn handle_add(
 
     validate_schedule(&schedule)?;
 
-    // Save to storage
-    storage.save_schedule(&schedule)?;
+    // Install and activate natively before committing metadata. If backend
+    // activation fails, no enabled-but-broken schedule may remain visible in
+    // storage; uninstall also cleans partially written native units.
+    if let Err(error) = backend.install(&schedule).await {
+        let _ = backend.uninstall(&schedule).await;
+        return Err(error.into());
+    }
 
-    // Install in backend
-    backend.install(&schedule).await?;
+    if cmd.enabled
+        && let Err(error) = backend.enable(&schedule).await
+    {
+        let cleanup_error = backend.uninstall(&schedule).await.err();
+        return match cleanup_error {
+            Some(cleanup) => Err(anyhow::anyhow!(
+                "failed to enable schedule: {error}; cleanup also failed: {cleanup}"
+            )),
+            None => Err(error.into()),
+        };
+    }
 
-    if cmd.enabled {
-        backend.enable(&schedule).await?;
+    if let Err(error) = storage.save_schedule(&schedule) {
+        let cleanup_error = backend.uninstall(&schedule).await.err();
+        return match cleanup_error {
+            Some(cleanup) => Err(anyhow::anyhow!(
+                "failed to persist schedule: {error}; backend cleanup also failed: {cleanup}"
+            )),
+            None => Err(error.into()),
+        };
     }
 
     let schedule_type = if schedule.is_one_off() {
@@ -1029,6 +1049,13 @@ async fn handle_run(storage: &Storage, backend: &dyn Backend, cmd: RunCommand) -
     Ok(())
 }
 
+fn same_native_execution(left: &Run, right: &Run) -> bool {
+    if left.schedule_id != right.schedule_id {
+        return false;
+    }
+    (left.started_at - right.started_at).num_seconds().abs() <= 2
+}
+
 async fn handle_logs(storage: &Storage, backend: &dyn Backend, cmd: &LogsCommand) -> Result<()> {
     let schedule = storage
         .get_schedule_by_name(&cmd.name)?
@@ -1043,8 +1070,15 @@ async fn handle_logs(storage: &Storage, backend: &dyn Backend, cmd: &LogsCommand
             .get_runs(&schedule, cmd.last)
             .await
             .unwrap_or_default();
-        runs.extend(backend_runs);
-        runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        for backend_run in backend_runs {
+            if !runs
+                .iter()
+                .any(|stored_run| same_native_execution(stored_run, &backend_run))
+            {
+                runs.push(backend_run);
+            }
+        }
+        runs.sort_by_key(|run| std::cmp::Reverse(run.started_at));
         runs.truncate(cmd.last);
     }
 
@@ -1153,4 +1187,25 @@ fn handle_completions(shell: Shell) -> Result<()> {
     let mut cmd = Cli::command();
     clap_complete::generate(shell, &mut cmd, "skdlr", &mut io::stdout());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_and_stored_records_for_same_execution_are_deduplicated() {
+        let schedule_id = Schedule::new("test", "0 * * * *", "true").id;
+        let stored = Run::new(schedule_id, true);
+        let mut native = Run::new(schedule_id, false);
+        native.started_at = stored.started_at + chrono::Duration::seconds(2);
+        assert!(same_native_execution(&stored, &native));
+
+        native.started_at = stored.started_at + chrono::Duration::seconds(3);
+        assert!(!same_native_execution(&stored, &native));
+
+        let other_schedule_id = Schedule::new("other", "0 * * * *", "true").id;
+        let other = Run::new(other_schedule_id, false);
+        assert!(!same_native_execution(&stored, &other));
+    }
 }

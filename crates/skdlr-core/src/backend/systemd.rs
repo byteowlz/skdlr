@@ -403,7 +403,7 @@ impl Backend for SystemdBackend {
                 }
             }
 
-            runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+            runs.sort_by_key(|run| std::cmp::Reverse(run.started_at));
             runs.truncate(limit);
             Ok(runs)
         })
@@ -527,10 +527,10 @@ fn cron_to_oncalendar(cron_expr: &str) -> Result<String> {
         )));
     }
 
-    let minute = parts[0];
-    let hour = parts[1];
-    let day = parts[2];
-    let month = parts[3];
+    let minute = cron_field_to_systemd(parts[0], 0)?;
+    let hour = cron_field_to_systemd(parts[1], 0)?;
+    let day = cron_field_to_systemd(parts[2], 1)?;
+    let month = cron_field_to_systemd(parts[3], 1)?;
     let dow = parts[4];
 
     // Build OnCalendar string
@@ -545,18 +545,35 @@ fn cron_to_oncalendar(cron_expr: &str) -> Result<String> {
 
     // Date part: *-Month-Day
     calendar.push_str("*-");
-    calendar.push_str(if month == "*" { "*" } else { month });
+    calendar.push_str(&month);
     calendar.push('-');
-    calendar.push_str(if day == "*" { "*" } else { day });
+    calendar.push_str(&day);
     calendar.push(' ');
 
     // Time part: Hour:Minute:00
-    calendar.push_str(if hour == "*" { "*" } else { hour });
+    calendar.push_str(&hour);
     calendar.push(':');
-    calendar.push_str(if minute == "*" { "*" } else { minute });
+    calendar.push_str(&minute);
     calendar.push_str(":00");
 
     Ok(calendar)
+}
+
+/// systemd calendar repetition uses `start/step`, while cron commonly uses
+/// `*/step`. Time fields start at zero; month/day fields start at one.
+fn cron_field_to_systemd(field: &str, wildcard_start: u8) -> Result<String> {
+    let Some(step) = field.strip_prefix("*/") else {
+        return Ok(field.to_string());
+    };
+    let parsed = step
+        .parse::<u32>()
+        .map_err(|_| Error::InvalidCron(format!("invalid step value: {field}")))?;
+    if parsed == 0 {
+        return Err(Error::InvalidCron(format!(
+            "step must be greater than zero: {field}"
+        )));
+    }
+    Ok(format!("{wildcard_start}/{parsed}"))
 }
 
 /// Converts cron day-of-week to systemd format.
@@ -590,5 +607,25 @@ mod tests {
 
         // First of every month at 2:30am
         assert_eq!(cron_to_oncalendar("30 2 1 * *").unwrap(), "*-*-1 2:30:00");
+
+        // Every six hours at minute 17. systemd uses start/step, not */step.
+        assert_eq!(
+            cron_to_oncalendar("17 */6 * * *").unwrap(),
+            "*-*-* 0/6:17:00"
+        );
+
+        // Every fifteen minutes.
+        assert_eq!(
+            cron_to_oncalendar("*/15 * * * *").unwrap(),
+            "*-*-* *:0/15:00"
+        );
+
+        // Every other month/day uses one as the wildcard range origin.
+        assert_eq!(
+            cron_to_oncalendar("0 0 */2 */3 *").unwrap(),
+            "*-1/3-1/2 0:0:00"
+        );
+
+        assert!(cron_to_oncalendar("0 */0 * * *").is_err());
     }
 }
