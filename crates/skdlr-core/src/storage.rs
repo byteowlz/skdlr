@@ -72,10 +72,6 @@ impl Storage {
                 retry_delay_secs INTEGER NOT NULL DEFAULT 30
             );
 
-            -- Unique key is now (tenant_id, name) for multi-tenant isolation
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_schedules_tenant_name
-                ON schedules(tenant_id, name);
-
             CREATE TABLE IF NOT EXISTS runs (
                 id TEXT PRIMARY KEY,
                 schedule_id TEXT NOT NULL,
@@ -128,8 +124,20 @@ impl Storage {
             ",
         )?;
 
-        // Migration: add new columns to existing databases
+        // Migration: add new columns to existing databases. Must run before any
+        // index that references a migrated column so upgrades from an older
+        // schema (e.g. a schedules table predating tenant_id) do not abort.
         self.migrate()?;
+
+        // Indexes that reference columns added by migrate() are created only
+        // after the columns are guaranteed to exist.
+        self.conn.execute_batch(
+            "
+            -- Unique key is (tenant_id, name) for multi-tenant isolation.
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_schedules_tenant_name
+                ON schedules(tenant_id, name);
+            ",
+        )?;
         Ok(())
     }
 
@@ -793,6 +801,67 @@ fn parse_env(
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    #[test]
+    fn init_schema_upgrades_pre_tenant_database() {
+        // Simulate a database created by a version predating tenant_id: an
+        // existing schedules table without the column and the old name-only
+        // unique index. init_schema must migrate rather than abort on the
+        // (tenant_id, name) index.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE schedules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                cron_expr TEXT,
+                command TEXT NOT NULL,
+                workdir TEXT,
+                env TEXT,
+                status TEXT NOT NULL DEFAULT 'enabled',
+                user TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                paused_until TEXT,
+                backend_id TEXT
+            );
+            CREATE UNIQUE INDEX idx_schedules_name ON schedules(name);
+            INSERT INTO schedules (id, name, cron_expr, command, env, status, created_at, updated_at)
+                VALUES ('00000000-0000-0000-0000-000000000001', 'legacy', '0 * * * *', 'echo legacy', '{}', 'enabled', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+            ",
+        )
+        .unwrap();
+
+        let storage = Storage { conn };
+        storage.init_schema().unwrap();
+
+        let all = storage.list_schedules().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].tenant_id, DEFAULT_TENANT_ID);
+
+        // The old single-column index must be gone; the tenant-scoped one present.
+        let has_old: bool = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_schedules_name'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap();
+        assert!(!has_old);
+        let has_new: bool = storage
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_schedules_tenant_name'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap();
+        assert!(has_new);
+    }
 
     #[test]
     fn test_schedule_crud() {
