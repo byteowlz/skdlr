@@ -415,8 +415,16 @@ impl Backend for SystemdBackend {
     ) -> BoxFuture<'a, Result<Option<DateTime<Utc>>>> {
         Box::pin(async move {
             let timer = self.timer_name(schedule);
+            // Ask systemd for an epoch value so named local timezone strings
+            // (CEST, PST, etc.) never fall through to a UTC cron calculation.
             let output = self
-                .systemctl(&["show", &timer, "--property=NextElapseUSecRealtime"])
+                .systemctl(&[
+                    "show",
+                    &timer,
+                    "--property=NextElapseUSecRealtime",
+                    "--value",
+                    "--timestamp=unix",
+                ])
                 .await?;
 
             if !output.status.success() {
@@ -425,48 +433,15 @@ impl Backend for SystemdBackend {
             }
 
             let stdout = String::from_utf8_lossy(&output.stdout);
-            // Parse "NextElapseUSecRealtime=<timestamp>" format
-            // Example: "NextElapseUSecRealtime=Wed 2026-01-15 22:00:00 UTC"
-            if let Some(value) = stdout.trim().strip_prefix("NextElapseUSecRealtime=") {
-                if value.is_empty() || value == "n/a" {
-                    // Timer not active, fall back to schedule-based calculation
-                    return Ok(next_from_schedule(&schedule.kind));
-                }
-
-                // Try parsing the systemd timestamp format
-                // Format: "Day YYYY-MM-DD HH:MM:SS TZ" or epoch microseconds
-                if let Ok(usec) = value.parse::<u64>() {
-                    // It's in microseconds since epoch
-                    let secs = (usec / 1_000_000) as i64;
-                    if let Some(dt) = DateTime::from_timestamp(secs, 0) {
-                        return Ok(Some(dt));
-                    }
-                }
-
-                // Try parsing as human-readable format (e.g., "Wed 2026-01-15 22:00:00 UTC")
-                // Skip the day name if present
-                let date_str = if value.contains(' ') {
-                    // Skip first word if it looks like a day name
-                    let parts: Vec<&str> = value.splitn(2, ' ').collect();
-                    if parts.len() == 2 && parts[0].len() <= 3 {
-                        parts[1]
-                    } else {
-                        value
-                    }
-                } else {
-                    value
-                };
-
-                // Parse "YYYY-MM-DD HH:MM:SS TZ" format
-                if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(
-                    date_str.trim_end_matches(" UTC").trim_end_matches(" Local"),
-                    "%Y-%m-%d %H:%M:%S",
-                ) {
-                    return Ok(Some(dt.and_utc()));
-                }
+            let value = stdout.trim();
+            if value.is_empty() || value == "n/a" {
+                return Ok(next_from_schedule(&schedule.kind));
+            }
+            if let Some(timestamp) = parse_systemd_unix_timestamp(value) {
+                return Ok(Some(timestamp));
             }
 
-            // Fall back to schedule-based calculation if parsing fails
+            // Fall back only when an older systemd cannot emit unix timestamps.
             Ok(next_from_schedule(&schedule.kind))
         })
     }
@@ -474,6 +449,12 @@ impl Backend for SystemdBackend {
     fn is_available(&self) -> bool {
         is_available()
     }
+}
+
+fn parse_systemd_unix_timestamp(value: &str) -> Option<DateTime<Utc>> {
+    let seconds = value.strip_prefix('@').unwrap_or(value);
+    let whole_seconds = seconds.split('.').next()?.parse::<i64>().ok()?;
+    DateTime::from_timestamp(whole_seconds, 0)
 }
 
 /// Checks if systemd is available on this system.
@@ -596,6 +577,23 @@ fn dow_to_systemd(dow: &str) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn systemd_unix_timestamp_is_timezone_independent() {
+        assert_eq!(
+            parse_systemd_unix_timestamp("@1784715420")
+                .expect("timestamp")
+                .timestamp(),
+            1_784_715_420
+        );
+        assert_eq!(
+            parse_systemd_unix_timestamp("@1784715420.123456")
+                .expect("fractional timestamp")
+                .timestamp(),
+            1_784_715_420
+        );
+        assert!(parse_systemd_unix_timestamp("Wed 2026-07-22 CEST").is_none());
+    }
 
     #[test]
     fn test_cron_to_oncalendar() {
