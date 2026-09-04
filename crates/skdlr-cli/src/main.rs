@@ -8,8 +8,8 @@ use anyhow::Result;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
-use skdlr_core::backend::{Backend, BackendKind, create_backend};
-use skdlr_core::models::{Run, Schedule, ScheduleKind, ScheduleStatus};
+use skdlr_core::backend::{Backend, BackendKind, create_backend_with_paths};
+use skdlr_core::models::{Run, RunStatus, Schedule, ScheduleKind, ScheduleStatus};
 use skdlr_core::paths::AppPaths;
 use skdlr_core::validation::{
     validate_cron_expression, validate_run_at, validate_schedule, validate_schedule_name,
@@ -32,7 +32,7 @@ async fn run() -> Result<()> {
     paths.ensure_directories()?;
     let config = SkdlrConfig::load(&paths, false)?;
     let storage = Storage::open(&paths.db_path)?;
-    let backend = create_backend(config.backend_kind(), &config);
+    let backend = create_backend_with_paths(config.backend_kind(), &config, Some(&paths));
 
     match cli.command {
         Command::Add(cmd) => handle_add(&storage, backend.as_ref(), &config, cmd).await,
@@ -44,6 +44,7 @@ async fn run() -> Result<()> {
         Command::Disable(cmd) => handle_disable(&storage, backend.as_ref(), cmd).await,
         Command::Run(cmd) => handle_run(&storage, backend.as_ref(), cmd).await,
         Command::Logs(cmd) => handle_logs(&storage, backend.as_ref(), &cmd).await,
+        Command::Exec(cmd) => handle_exec(&storage, cmd).await,
         Command::Status => handle_status(&storage, backend.as_ref()).await,
         Command::Next => handle_next(&storage, backend.as_ref()).await,
         Command::Backend => handle_backend(backend.as_ref()),
@@ -119,6 +120,11 @@ enum Command {
         #[arg(value_enum)]
         shell: Shell,
     },
+
+    /// Internal run recorder invoked by generated launchd plists.
+    /// Executes the trailing program and records the run lifecycle in storage.
+    #[command(hide = true, name = "__exec")]
+    Exec(ExecCommand),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -229,6 +235,17 @@ struct LogsCommand {
     /// Number of runs to show
     #[arg(long, default_value = "10")]
     last: usize,
+}
+
+#[derive(Debug, Clone, Args)]
+#[command(hide = true)]
+struct ExecCommand {
+    /// Schedule name
+    name: String,
+
+    /// Program and arguments to execute
+    #[arg(last = true)]
+    args: Vec<String>,
 }
 
 async fn handle_add(
@@ -1056,12 +1073,95 @@ fn same_native_execution(left: &Run, right: &Run) -> bool {
     (left.started_at - right.started_at).num_seconds().abs() <= 2
 }
 
+/// Runs records older than this are considered stale for reconciliation.
+const STALE_RUN_THRESHOLD_SECS: i64 = 60;
+
+/// Maximum age of a dispatched-but-incomplete manual run the recorder adopts.
+const MAX_RUN_ADOPT_AGE_SECS: i64 = 15 * 60;
+
+/// Executes a command on behalf of launchd and records the run lifecycle.
+///
+/// Generated `LaunchAgent` plists route jobs through this handler:
+/// `skdlr __exec <name> -- <program> <args...>`. If `skdlr run` dispatched
+/// this execution, its pre-created run record is adopted; otherwise (a native
+/// scheduled run) a new record is created. Either way the record is completed
+/// with the actual exit code, so history is never stuck in `running`.
+async fn handle_exec(storage: &Storage, cmd: ExecCommand) -> Result<()> {
+    if cmd.args.is_empty() {
+        anyhow::bail!("no command provided after '--'");
+    }
+
+    let schedule = storage
+        .get_schedule_by_name(&cmd.name)?
+        .ok_or_else(|| anyhow::anyhow!("schedule '{}' not found", cmd.name))?;
+
+    // Adopt the run record created by `skdlr run` when present; native
+    // scheduled executions have no pre-created record and get a fresh one.
+    let mut run = storage
+        .get_runs(&schedule.id, 5)?
+        .into_iter()
+        .find(|run| {
+            run.status == RunStatus::Running
+                && run.manual
+                && (chrono::Utc::now() - run.started_at).num_seconds() <= MAX_RUN_ADOPT_AGE_SECS
+        })
+        .unwrap_or_else(|| Run::new(schedule.id, false));
+    storage.save_run(&run)?;
+
+    let mut command = tokio::process::Command::new(&cmd.args[0]);
+    command.args(&cmd.args[1..]);
+
+    if let Some(workdir) = &schedule.workdir {
+        command.current_dir(workdir);
+    }
+    for (key, value) in &schedule.env {
+        command.env(key, value);
+    }
+
+    // Inherit stdio so launchd's StandardOutPath/StandardErrorPath capture output.
+    command.stdin(std::process::Stdio::inherit());
+
+    match command.status().await {
+        Ok(status) => run.complete(status.code().unwrap_or(-1)),
+        Err(e) => run.fail(format!("failed to execute command: {e}")),
+    }
+
+    storage.save_run(&run)?;
+    Ok(())
+}
+
 async fn handle_logs(storage: &Storage, backend: &dyn Backend, cmd: &LogsCommand) -> Result<()> {
     let schedule = storage
         .get_schedule_by_name(&cmd.name)?
         .ok_or_else(|| anyhow::anyhow!("schedule '{}' not found", cmd.name))?;
 
     let mut runs = storage.get_runs(&schedule.id, cmd.last)?;
+
+    // Finalize stale `running` records against authoritative scheduler state
+    // (e.g. `launchctl print` for the launchd backend). Only records older
+    // than the threshold are considered, so genuinely long-running jobs that
+    // started moments ago are never touched.
+    let stale: Vec<Run> = runs
+        .iter()
+        .filter(|run| {
+            run.status == RunStatus::Running
+                && (chrono::Utc::now() - run.started_at).num_seconds() > STALE_RUN_THRESHOLD_SECS
+        })
+        .cloned()
+        .collect();
+    if !stale.is_empty() {
+        let reconciled = backend
+            .reconcile_stale_runs(&schedule, &stale)
+            .await
+            .unwrap_or_default();
+        for run in reconciled {
+            if storage.save_run(&run).is_ok()
+                && let Some(slot) = runs.iter_mut().find(|stored| stored.id == run.id)
+            {
+                *slot = run;
+            }
+        }
+    }
 
     // Native schedulers (e.g., systemd timers) can produce executions that are
     // not persisted in the local runs table yet. Fall back to backend logs.

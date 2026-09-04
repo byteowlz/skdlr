@@ -89,6 +89,24 @@ default_workdir = "~"
 check_interval_secs = 60
 ```
 
+## macOS (launchd) notes
+
+Generated LaunchAgents:
+
+- **Environment/PATH**: launchd runs agents with a stripped environment, so
+  skdlr embeds `EnvironmentVariables` in every plist, capturing your `PATH` at
+  install time (falling back to a Homebrew + system default). Commands can
+  resolve user-installed binaries (e.g. `atuin`, `restic`). If your PATH
+  changes, re-run `skdlr enable <name>` to regenerate the plist.
+- **Cron expressions**: launchd's `StartCalendarInterval` cannot express cron
+  step values, so skdlr normalizes expressions — `*/15 * * * *` becomes an
+  array of interval dictionaries, and `* * * * *` becomes `StartInterval` 60.
+- **Run history**: launchd executes jobs outside skdlr, so generated plists
+  route commands through the skdlr binary (`skdlr __exec`) which records each
+  execution — scheduled or manual — in SQLite with its actual exit code.
+  `skdlr logs <name>` additionally reconciles stale records against
+  authoritative `launchctl print` state.
+
 ## Architecture
 
 ```

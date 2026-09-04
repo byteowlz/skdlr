@@ -119,6 +119,20 @@ pub trait Backend: Send + Sync {
         limit: usize,
     ) -> BoxFuture<'a, Result<Vec<Run>>>;
 
+    /// Reconciles stale `running` run records against the native scheduler.
+    ///
+    /// Backends that execute jobs outside the skdlr process (e.g. launchd)
+    /// implement this to finalize run records using authoritative scheduler
+    /// state. Returns the updated runs; the caller persists them. The default
+    /// implementation is a no-op (records are completed by the dispatcher).
+    fn reconcile_stale_runs<'a>(
+        &'a self,
+        _schedule: &'a Schedule,
+        _stale: &'a [Run],
+    ) -> BoxFuture<'a, Result<Vec<Run>>> {
+        Box::pin(async move { Ok(Vec::new()) })
+    }
+
     /// Gets the next scheduled run time.
     fn next_run<'a>(
         &'a self,
@@ -130,13 +144,29 @@ pub trait Backend: Send + Sync {
 }
 
 /// Creates a backend instance for the current platform.
+///
+/// See [`create_backend_with_paths`] to pass explicit application paths so
+/// backends can locate the shared metadata database (required by the launchd
+/// run recorder when a custom `--config` is in use).
 pub fn create_backend(kind: BackendKind, config: &crate::SkdlrConfig) -> Box<dyn Backend> {
+    create_backend_with_paths(kind, config, None)
+}
+
+/// Creates a backend instance for the current platform, optionally binding it
+/// to explicit application paths.
+pub fn create_backend_with_paths(
+    kind: BackendKind,
+    config: &crate::SkdlrConfig,
+    paths: Option<&crate::paths::AppPaths>,
+) -> Box<dyn Backend> {
     match kind {
         #[cfg(target_os = "linux")]
         BackendKind::Systemd => Box::new(systemd::SystemdBackend::new(config)),
 
         #[cfg(target_os = "macos")]
-        BackendKind::Launchd => Box::new(launchd::LaunchdBackend::new(config)),
+        BackendKind::Launchd => {
+            Box::new(launchd::LaunchdBackend::with_paths(config, paths))
+        }
 
         #[cfg(target_os = "windows")]
         BackendKind::Schtasks => Box::new(schtasks::SchtasksBackend::new(config)),
