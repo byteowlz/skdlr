@@ -131,6 +131,12 @@ pub struct Schedule {
     /// Backoff base delay in seconds between retries.
     #[serde(default = "default_retry_delay_secs")]
     pub retry_delay_secs: u64,
+
+    /// Creation-time `AGENT_CTX` snapshot (who/where created this schedule).
+    /// Metadata only — never a permission source. `None` when the creating
+    /// process had no `AGENT_CTX` environment.
+    #[serde(default)]
+    pub agent_ctx: Option<crate::agent_ctx::AgentContext>,
 }
 
 fn default_tenant_id() -> String {
@@ -166,6 +172,7 @@ impl Schedule {
             backend_id: None,
             max_retries: 0,
             retry_delay_secs: 30,
+            agent_ctx: None,
         }
     }
 
@@ -193,6 +200,7 @@ impl Schedule {
             backend_id: None,
             max_retries: 0,
             retry_delay_secs: 30,
+            agent_ctx: None,
         }
     }
 

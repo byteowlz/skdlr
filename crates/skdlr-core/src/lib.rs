@@ -6,6 +6,7 @@
 //! - SQLite-based metadata storage
 //! - Platform-specific backend implementations
 
+pub mod agent_ctx;
 pub mod backend;
 pub mod config;
 pub mod dispatcher;
@@ -16,6 +17,7 @@ pub mod scheduler;
 pub mod storage;
 pub mod validation;
 
+pub use agent_ctx::AgentContext;
 pub use config::SkdlrConfig;
 pub use dispatcher::{DispatchResult, Dispatcher, LocalDispatcher};
 pub use error::{Error, Result};

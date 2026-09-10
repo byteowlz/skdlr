@@ -389,7 +389,7 @@ async fn create_schedule(
         ));
     }
 
-    let schedule = match (req.cron_expr, req.run_at) {
+    let mut schedule = match (req.cron_expr, req.run_at) {
         (Some(cron_expr), None) => Schedule::new(&req.name, &cron_expr, &req.command),
         (None, Some(run_at)) => Schedule::new_one_off(&req.name, run_at, &req.command),
         (Some(_), Some(_)) => {
@@ -405,6 +405,8 @@ async fn create_schedule(
             ));
         }
     };
+    // Snapshot the AGENT_CTX environment at creation time (metadata only).
+    schedule.agent_ctx = skdlr_core::agent_ctx::AgentContext::capture();
 
     let schedule = schedule
         .with_tenant(&tenant_id)

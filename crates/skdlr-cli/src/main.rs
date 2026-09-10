@@ -8,6 +8,7 @@ use anyhow::Result;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
+use skdlr_core::agent_ctx::AgentContext;
 use skdlr_core::backend::{Backend, BackendKind, create_backend_with_paths};
 use skdlr_core::models::{Run, RunStatus, Schedule, ScheduleKind, ScheduleStatus};
 use skdlr_core::paths::AppPaths;
@@ -49,6 +50,7 @@ async fn run() -> Result<()> {
         Command::Next => handle_next(&storage, backend.as_ref()).await,
         Command::Backend => handle_backend(backend.as_ref()),
         Command::Doctor => handle_doctor(backend.as_ref()),
+        Command::Ctx => handle_ctx(),
         Command::Completions { shell } => handle_completions(shell),
     }
 }
@@ -114,6 +116,9 @@ enum Command {
 
     /// Health check
     Doctor,
+
+    /// Print the effective `AGENT_CTX` environment context
+    Ctx,
 
     /// Generate shell completions
     Completions {
@@ -293,6 +298,10 @@ async fn handle_add(
     if !cmd.enabled {
         schedule.status = ScheduleStatus::Disabled;
     }
+
+    // Snapshot the AGENT_CTX environment at creation time (metadata only;
+    // None when no context is present).
+    schedule.agent_ctx = AgentContext::capture();
 
     validate_schedule(&schedule)?;
 
@@ -925,6 +934,12 @@ fn handle_show(storage: &Storage, cmd: &ShowCommand) -> Result<()> {
     }
     println!("Created:     {}", schedule.created_at);
     println!("Updated:     {}", schedule.updated_at);
+    if let Some(ctx) = &schedule.agent_ctx {
+        println!("Created by:");
+        for (name, value) in ctx.iter_present() {
+            println!("  {name:<32} {value}");
+        }
+    }
 
     Ok(())
 }
@@ -1308,6 +1323,24 @@ fn handle_doctor(backend: &dyn Backend) -> Result<()> {
     let detected = BackendKind::detect();
     println!("Detected backend: {}", detected);
 
+    Ok(())
+}
+
+fn handle_ctx() -> Result<()> {
+    match AgentContext::capture() {
+        Some(ctx) => {
+            println!(
+                "Effective AGENT_CTX (v{}):",
+                ctx.version.as_deref().unwrap_or("?")
+            );
+            for (name, value) in ctx.iter_present() {
+                println!("  {name:<32} {value}");
+            }
+        }
+        None => {
+            println!("No AGENT_CTX_* variables set in this environment.");
+        }
+    }
     Ok(())
 }
 

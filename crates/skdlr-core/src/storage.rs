@@ -69,7 +69,8 @@ impl Storage {
                 paused_until TEXT,
                 backend_id TEXT,
                 max_retries INTEGER NOT NULL DEFAULT 0,
-                retry_delay_secs INTEGER NOT NULL DEFAULT 30
+                retry_delay_secs INTEGER NOT NULL DEFAULT 30,
+                agent_ctx TEXT
             );
 
             CREATE TABLE IF NOT EXISTS runs (
@@ -161,6 +162,10 @@ impl Storage {
             "ALTER TABLE schedules ADD COLUMN retry_delay_secs INTEGER NOT NULL DEFAULT 30",
             [],
         );
+        // Add AGENT_CTX creation-time snapshot column
+        let _ = self
+            .conn
+            .execute("ALTER TABLE schedules ADD COLUMN agent_ctx TEXT", []);
         // Drop old unique index on name only (if exists) — replaced by (tenant_id, name)
         let _ = self
             .conn
@@ -175,6 +180,12 @@ impl Storage {
         validate_schedule(schedule)?;
         let env_json = serde_json::to_string(&schedule.env)
             .map_err(|e| Error::Parse(format!("failed to serialize env: {e}")))?;
+        let agent_ctx_json = schedule
+            .agent_ctx
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| Error::Parse(format!("failed to serialize agent_ctx: {e}")))?;
 
         let (cron_expr, run_at) = match &schedule.kind {
             ScheduleKind::Recurring { cron_expr } => (Some(cron_expr.clone()), None),
@@ -184,8 +195,8 @@ impl Storage {
         self.conn.execute(
             "INSERT INTO schedules (id, tenant_id, name, description, cron_expr, run_at, command,
                 workdir, env, status, user, created_at, updated_at, paused_until, backend_id,
-                max_retries, retry_delay_secs)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                max_retries, retry_delay_secs, agent_ctx)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
              ON CONFLICT(id) DO UPDATE SET
                 tenant_id = excluded.tenant_id,
                 name = excluded.name,
@@ -201,7 +212,8 @@ impl Storage {
                 paused_until = excluded.paused_until,
                 backend_id = excluded.backend_id,
                 max_retries = excluded.max_retries,
-                retry_delay_secs = excluded.retry_delay_secs",
+                retry_delay_secs = excluded.retry_delay_secs,
+                agent_ctx = excluded.agent_ctx",
             params![
                 schedule.id.to_string(),
                 &schedule.tenant_id,
@@ -220,6 +232,7 @@ impl Storage {
                 &schedule.backend_id,
                 schedule.max_retries,
                 schedule.retry_delay_secs as i64,
+                agent_ctx_json,
             ],
         )?;
         Ok(())
@@ -231,7 +244,7 @@ impl Storage {
             .query_row(
                 "SELECT id, tenant_id, name, description, cron_expr, run_at, command, workdir,
                     env, status, user, created_at, updated_at, paused_until, backend_id,
-                    max_retries, retry_delay_secs
+                    max_retries, retry_delay_secs, agent_ctx
                  FROM schedules WHERE id = ?1",
                 params![id.to_string()],
                 Self::row_to_schedule,
@@ -255,7 +268,7 @@ impl Storage {
             .query_row(
                 "SELECT id, tenant_id, name, description, cron_expr, run_at, command, workdir,
                     env, status, user, created_at, updated_at, paused_until, backend_id,
-                    max_retries, retry_delay_secs
+                    max_retries, retry_delay_secs, agent_ctx
                  FROM schedules WHERE tenant_id = ?1 AND name = ?2",
                 params![tenant_id, name],
                 Self::row_to_schedule,
@@ -274,7 +287,7 @@ impl Storage {
         let mut stmt = self.conn.prepare(
             "SELECT id, tenant_id, name, description, cron_expr, run_at, command, workdir,
                 env, status, user, created_at, updated_at, paused_until, backend_id,
-                max_retries, retry_delay_secs
+                max_retries, retry_delay_secs, agent_ctx
              FROM schedules WHERE tenant_id = ?1 ORDER BY name",
         )?;
 
@@ -290,7 +303,7 @@ impl Storage {
         let mut stmt = self.conn.prepare(
             "SELECT id, tenant_id, name, description, cron_expr, run_at, command, workdir,
                 env, status, user, created_at, updated_at, paused_until, backend_id,
-                max_retries, retry_delay_secs
+                max_retries, retry_delay_secs, agent_ctx
              FROM schedules ORDER BY tenant_id, name",
         )?;
 
@@ -683,6 +696,11 @@ impl Storage {
             backend_id: row.get(14)?,
             max_retries,
             retry_delay_secs,
+            // The contract requires tolerating malformed context, so a corrupt
+            // snapshot degrades to absent instead of failing the load.
+            agent_ctx: row
+                .get::<_, Option<String>>(17)?
+                .and_then(|json| serde_json::from_str(&json).ok()),
         })
     }
 
@@ -933,6 +951,60 @@ mod tests {
 
         storage.delete_schedule(&schedule.id).unwrap();
         assert!(storage.get_schedule(&schedule.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_agent_ctx_round_trip() {
+        let storage = Storage::in_memory().unwrap();
+
+        let mut schedule = Schedule::new("ctx-test", "0 * * * *", "echo hello");
+        schedule.agent_ctx = Some(crate::agent_ctx::AgentContext {
+            version: Some("1".to_string()),
+            platform_name: Some("oqto".to_string()),
+            workspace_id: Some("ws_a13f".to_string()),
+            user_id: Some("u_123".to_string()),
+            ..Default::default()
+        });
+        storage.save_schedule(&schedule).unwrap();
+
+        let loaded = storage.get_schedule(&schedule.id).unwrap().unwrap();
+        let ctx = loaded.agent_ctx.expect("agent_ctx should persist");
+        assert_eq!(ctx.workspace_id.as_deref(), Some("ws_a13f"));
+        assert_eq!(ctx.platform_name.as_deref(), Some("oqto"));
+        assert_eq!(ctx.request_id, None);
+    }
+
+    #[test]
+    fn test_agent_ctx_none_round_trips() {
+        let storage = Storage::in_memory().unwrap();
+
+        let schedule = Schedule::new("no-ctx", "0 * * * *", "echo hello");
+        assert!(schedule.agent_ctx.is_none());
+        storage.save_schedule(&schedule).unwrap();
+
+        let loaded = storage.get_schedule(&schedule.id).unwrap().unwrap();
+        assert!(loaded.agent_ctx.is_none());
+    }
+
+    #[test]
+    fn test_malformed_agent_ctx_degrades_to_none() {
+        let storage = Storage::in_memory().unwrap();
+
+        let schedule = Schedule::new("bad-ctx", "0 * * * *", "echo hello");
+        storage.save_schedule(&schedule).unwrap();
+        storage
+            .conn()
+            .execute(
+                "UPDATE schedules SET agent_ctx = 'not-json' WHERE id = ?1",
+                [schedule.id.to_string()],
+            )
+            .unwrap();
+
+        // The contract requires tolerating malformed context: the schedule
+        // must still load, with the snapshot degraded to absent.
+        let loaded = storage.get_schedule(&schedule.id).unwrap().unwrap();
+        assert!(loaded.agent_ctx.is_none());
+        assert_eq!(loaded.name, "bad-ctx");
     }
 
     #[test]
