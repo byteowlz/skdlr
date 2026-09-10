@@ -84,6 +84,20 @@ impl InternalBackend {
         }
     }
 
+    /// Returns true if a schedule should execute at `now`.
+    ///
+    /// Recurring schedules are due when their next cron occurrence falls
+    /// within the check window. One-off schedules are due once their time has
+    /// arrived (`now >= run_at`) and stay due until executed, so a run missed
+    /// while the daemon was down is still caught up rather than dropped.
+    fn is_due(kind: &ScheduleKind, now: DateTime<Utc>, window_secs: i64) -> bool {
+        match kind {
+            ScheduleKind::Recurring { cron_expr } => Self::next_from_cron(cron_expr)
+                .is_some_and(|next| (next - now).num_seconds().abs() <= window_secs),
+            ScheduleKind::OneOff { run_at } => now >= *run_at,
+        }
+    }
+
     /// Calculates the next run time from a cron expression.
     fn next_from_cron(cron_expr: &str) -> Option<DateTime<Utc>> {
         use cron::Schedule as CronSchedule;
@@ -120,13 +134,7 @@ impl InternalBackend {
             return;
         }
 
-        let Some(next) = Self::next_run_time(&schedule.kind) else {
-            return;
-        };
-
-        let now = Utc::now();
-        let diff = (next - now).num_seconds().abs();
-        if diff > self.check_interval_secs as i64 {
+        if !Self::is_due(&schedule.kind, Utc::now(), self.check_interval_secs as i64) {
             return;
         }
 
@@ -266,5 +274,27 @@ mod tests {
         let (shell, args) = shell_command();
         assert_eq!(shell, "sh");
         assert_eq!(args, ["-c"]);
+    }
+
+    #[test]
+    fn one_off_is_due_once_time_has_arrived() {
+        let now = Utc::now();
+        let kind = ScheduleKind::one_off(now - chrono::Duration::minutes(5));
+        // Past-due one-offs stay due (catch-up), they are never dropped.
+        assert!(InternalBackend::is_due(&kind, now, 60));
+
+        let kind = ScheduleKind::one_off(now + chrono::Duration::minutes(5));
+        assert!(!InternalBackend::is_due(&kind, now, 60));
+    }
+
+    #[test]
+    fn recurring_is_due_within_check_window() {
+        let now = Utc::now();
+        // Every minute: due with a 60s window…
+        let every_minute = ScheduleKind::recurring("* * * * *");
+        assert!(InternalBackend::is_due(&every_minute, now, 60));
+        // …but a yearly schedule is months away, so never due.
+        let yearly = ScheduleKind::recurring("0 0 1 1 *");
+        assert!(!InternalBackend::is_due(&yearly, now, 60));
     }
 }

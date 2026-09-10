@@ -120,8 +120,11 @@ impl SystemdBackend {
                 ))
             }
             ScheduleKind::OneOff { run_at } => {
-                // Convert timestamp to systemd OnCalendar format
-                // Format: YYYY-MM-DD HH:MM:SS
+                // A full timestamp (year included) makes the calendar spec
+                // fire exactly once; without a future occurrence the timer
+                // goes dormant after firing. `Persistent=true` catches up a
+                // run missed while the machine was off; `AccuracySec=1s`
+                // keeps the launch time tight (default slack is 1 minute).
                 let on_calendar = run_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
 
                 Ok(format!(
@@ -131,7 +134,8 @@ impl SystemdBackend {
                      \n\
                      [Timer]\n\
                      OnCalendar={}\n\
-                     Persistent=false\n\
+                     AccuracySec=1s\n\
+                     Persistent=true\n\
                      \n\
                      [Install]\n\
                      WantedBy=timers.target\n",
@@ -625,5 +629,22 @@ mod tests {
         );
 
         assert!(cron_to_oncalendar("0 */0 * * *").is_err());
+    }
+
+    #[test]
+    fn test_generate_timer_one_off() {
+        let config = SkdlrConfig::default();
+        let backend = SystemdBackend::new(&config);
+
+        let run_at = DateTime::parse_from_rfc3339("2030-05-04T03:02:01Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let schedule = Schedule::new_one_off("probe", run_at, "echo hi");
+
+        let timer = backend.generate_timer(&schedule).unwrap();
+        assert!(timer.contains("OnCalendar=2030-05-04 03:02:01 UTC"));
+        assert!(timer.contains("AccuracySec=1s"));
+        assert!(timer.contains("Persistent=true"));
+        assert!(timer.contains(&format!("Requires={}", backend.service_name(&schedule))));
     }
 }

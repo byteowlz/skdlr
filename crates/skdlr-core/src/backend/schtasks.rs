@@ -39,6 +39,19 @@ impl SchtasksBackend {
         Ok(output)
     }
 
+    /// Returns the schtasks schedule parameters for a schedule of any kind.
+    fn schedule_args(&self, schedule: &Schedule) -> Result<Vec<String>> {
+        match schedule.run_at() {
+            Some(run_at) => Ok(one_off_to_schtasks_args(run_at)),
+            None => {
+                let cron_expr = schedule.cron_expr().ok_or_else(|| {
+                    Error::backend("schedule has neither cron nor run_at".to_string())
+                })?;
+                self.cron_to_schtasks_args(cron_expr)
+            }
+        }
+    }
+
     /// Converts a cron expression to schtasks schedule parameters.
     fn cron_to_schtasks_args(&self, cron_expr: &str) -> Result<Vec<String>> {
         let parts: Vec<&str> = cron_expr.split_whitespace().collect();
@@ -116,10 +129,7 @@ impl Backend for SchtasksBackend {
             ];
 
             // Add schedule parameters
-            let cron_expr = schedule
-                .cron_expr()
-                .ok_or_else(|| Error::InvalidCron("schedule is not recurring".to_string()))?;
-            let schedule_args = self.cron_to_schtasks_args(cron_expr)?;
+            let schedule_args = self.schedule_args(schedule)?;
             args_vec.extend(schedule_args);
 
             let args_refs: Vec<&str> = args_vec.iter().map(|s| s.as_str()).collect();
@@ -273,6 +283,23 @@ fn dow_to_schtasks(dow: &str) -> String {
     }
 }
 
+/// Converts a one-off timestamp to schtasks parameters.
+///
+/// `/SC ONCE` fires a single time at `/SD` (start date, locale short-date
+/// format — schtasks' default `MM/dd/yyyy`) plus `/ST` (`HH:mm`, 24-hour),
+/// both in local time.
+fn one_off_to_schtasks_args(run_at: chrono::DateTime<chrono::Utc>) -> Vec<String> {
+    let local = run_at.with_timezone(&chrono::Local);
+    vec![
+        "/SC".to_string(),
+        "ONCE".to_string(),
+        "/SD".to_string(),
+        local.format("%m/%d/%Y").to_string(),
+        "/ST".to_string(),
+        local.format("%H:%M").to_string(),
+    ]
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -283,5 +310,21 @@ mod tests {
         assert_eq!(dow_to_schtasks("0"), "SUN");
         assert_eq!(dow_to_schtasks("1"), "MON");
         assert_eq!(dow_to_schtasks("5"), "FRI");
+    }
+
+    #[test]
+    fn test_one_off_to_schtasks_args() {
+        use chrono::TimeZone;
+
+        let run_at = chrono::Utc.with_ymd_and_hms(2030, 5, 4, 3, 2, 0).unwrap();
+        let args = one_off_to_schtasks_args(run_at);
+
+        assert_eq!(&args[0], "/SC");
+        assert_eq!(&args[1], "ONCE");
+
+        // Date and time are rendered in local time.
+        let local = run_at.with_timezone(&chrono::Local);
+        assert_eq!(&args[3], &local.format("%m/%d/%Y").to_string());
+        assert_eq!(&args[5], &local.format("%H:%M").to_string());
     }
 }

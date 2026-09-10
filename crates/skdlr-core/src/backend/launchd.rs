@@ -20,6 +20,15 @@
 //! plists embed `EnvironmentVariables` with the invoking user's `PATH` (plus
 //! any per-schedule variables). Commands can rely on user-installed binaries
 //! (e.g. Homebrew tools) resolving at execution time.
+//!
+//! # One-off schedules
+//!
+//! launchd has no native one-off primitive (`StartCalendarInterval` has no
+//! year field). One-off schedules are materialized as a concrete calendar
+//! dict and disarmed by the run recorder: after `skdlr __exec` completes a
+//! natively scheduled one-off run, it unloads the job, removes the plist, and
+//! marks the schedule disabled — without that, the job would silently recur
+//! annually.
 
 use std::path::PathBuf;
 
@@ -147,10 +156,7 @@ impl LaunchdBackend {
             .map(|a| format!("        <string>{}</string>", escape_xml(a)))
             .collect();
 
-        let cron_expr = schedule
-            .cron_expr()
-            .ok_or_else(|| Error::InvalidCron("schedule is not recurring".to_string()))?;
-        let schedule_block = cron_to_schedule_block(cron_expr)?;
+        let schedule_block = schedule_block(schedule)?;
 
         let mut plist = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -449,6 +455,58 @@ impl Backend for LaunchdBackend {
     fn is_available(&self) -> bool {
         cfg!(target_os = "macos")
     }
+}
+
+/// Returns the launchd schedule XML block for a schedule of any kind.
+///
+/// launchd has no native one-off primitive: `StartCalendarInterval` has no
+/// year field, so a plist built from month/day/time would silently recur
+/// annually. One-off plists therefore carry the concrete calendar dict and
+/// rely on the run recorder (`skdlr __exec`) to unload the job after the
+/// first run — see the CLI's one-off disarm logic.
+fn schedule_block(schedule: &Schedule) -> Result<String> {
+    match schedule.run_at() {
+        Some(run_at) => one_off_to_schedule_block(run_at),
+        None => schedule
+            .cron_expr()
+            .ok_or_else(|| Error::backend("schedule has neither cron nor run_at".to_string()))
+            .and_then(cron_to_schedule_block),
+    }
+}
+
+/// Converts a one-off timestamp into a `StartCalendarInterval` dict.
+///
+/// launchd interprets calendar intervals in local time, so the stored UTC
+/// timestamp is converted first. The recorder unloads the job after the first
+/// run; an expired timestamp is rejected so re-enabling can never silently
+/// arm an annually-recurring job.
+fn one_off_to_schedule_block(run_at: chrono::DateTime<chrono::Utc>) -> Result<String> {
+    use chrono::{Datelike, Timelike};
+
+    if run_at <= chrono::Utc::now() {
+        return Err(Error::backend(format!(
+            "one-off run time {} has already passed; remove the schedule and re-add it with a future time",
+            run_at.format("%Y-%m-%d %H:%M:%S UTC")
+        )));
+    }
+
+    let local = run_at.with_timezone(&chrono::Local);
+    let fields = [
+        ("Month", local.month()),
+        ("Day", local.day()),
+        ("Hour", local.hour()),
+        ("Minute", local.minute()),
+    ];
+
+    let mut dict = String::from("        <dict>\n");
+    for (key, value) in fields {
+        dict.push_str(&format!(
+            "            <key>{key}</key>\n            <integer>{value}</integer>\n"
+        ));
+    }
+    dict.push_str("        </dict>");
+
+    Ok(format!("    <key>StartCalendarInterval</key>\n{dict}"))
 }
 
 /// Maximum number of interval dicts emitted for one schedule.
@@ -783,6 +841,69 @@ mod tests {
         let backend = LaunchdBackend::new(&config);
         let schedule = Schedule::new("always", "* * * * *", "echo hi");
         let plist = backend.generate_plist(&schedule).unwrap();
+        plist::Value::from_reader_xml(std::io::Cursor::new(&plist)).unwrap();
+    }
+
+    #[test]
+    fn test_generate_plist_one_off_uses_local_calendar_interval() {
+        use chrono::{Datelike, Timelike};
+
+        let config = SkdlrConfig::default();
+        let backend = LaunchdBackend::new(&config);
+
+        let run_at = chrono::Utc::now() + chrono::Duration::hours(2);
+        let schedule = Schedule::new_one_off("probe", run_at, "echo hi");
+
+        let plist = backend.generate_plist(&schedule).unwrap();
+        assert!(plist.contains("<key>StartCalendarInterval</key>"));
+        assert!(!plist.contains("StartInterval"));
+
+        // launchd interprets calendar intervals in local time; the generated
+        // dict must carry the local rendering of the stored UTC timestamp.
+        let local = run_at.with_timezone(&chrono::Local);
+        let expected = [
+            ("Month", local.month()),
+            ("Day", local.day()),
+            ("Hour", local.hour()),
+            ("Minute", local.minute()),
+        ];
+        for (key, value) in expected {
+            assert!(
+                plist.contains(&format!("<key>{key}</key>")),
+                "missing {key}"
+            );
+            assert!(plist.contains(&format!("<integer>{value}</integer>")));
+        }
+
+        // Must be well-formed XML.
+        plist::Value::from_reader_xml(std::io::Cursor::new(&plist)).unwrap();
+    }
+
+    #[test]
+    fn test_one_off_block_rejects_expired_timestamp() {
+        let past = chrono::Utc::now() - chrono::Duration::hours(1);
+        assert!(one_off_to_schedule_block(past).is_err());
+    }
+
+    #[test]
+    fn test_generate_plist_one_off_midnight_boundary() {
+        use chrono::{Datelike, TimeZone, Timelike};
+
+        let config = SkdlrConfig::default();
+        let backend = LaunchdBackend::new(&config);
+
+        // Midnight local two days out: hour and minute are zero, which used
+        // to render as an empty <integer> element.
+        let date = chrono::Local::now().date_naive() + chrono::Duration::days(2);
+        let run_at = chrono::Local
+            .with_ymd_and_hms(date.year(), date.month(), date.day(), 0, 0, 0)
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let schedule = Schedule::new_one_off("midnight", run_at, "echo hi");
+
+        let plist = backend.generate_plist(&schedule).unwrap();
+        assert!(plist.contains("<key>Hour</key>\n            <integer>0</integer>"));
+        assert!(plist.contains("<key>Minute</key>\n            <integer>0</integer>"));
         plist::Value::from_reader_xml(std::io::Cursor::new(&plist)).unwrap();
     }
 }

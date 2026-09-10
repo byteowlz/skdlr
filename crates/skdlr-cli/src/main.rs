@@ -44,7 +44,7 @@ async fn run() -> Result<()> {
         Command::Disable(cmd) => handle_disable(&storage, backend.as_ref(), cmd).await,
         Command::Run(cmd) => handle_run(&storage, backend.as_ref(), cmd).await,
         Command::Logs(cmd) => handle_logs(&storage, backend.as_ref(), &cmd).await,
-        Command::Exec(cmd) => handle_exec(&storage, cmd).await,
+        Command::Exec(cmd) => handle_exec(&storage, backend.as_ref(), cmd).await,
         Command::Status => handle_status(&storage, backend.as_ref()).await,
         Command::Next => handle_next(&storage, backend.as_ref()).await,
         Command::Backend => handle_backend(backend.as_ref()),
@@ -1020,6 +1020,19 @@ async fn handle_enable(storage: &Storage, backend: &dyn Backend, cmd: NameArg) -
         .get_schedule_by_name(&cmd.name)?
         .ok_or_else(|| anyhow::anyhow!("schedule '{}' not found", cmd.name))?;
 
+    // A one-off whose time has already passed cannot be materialized natively
+    // (launchd would wait for the same calendar date next year); reject it
+    // uniformly across backends instead of arming a dead schedule.
+    if let Some(run_at) = schedule.run_at()
+        && run_at <= chrono::Utc::now()
+    {
+        anyhow::bail!(
+            "one-off schedule '{}' was due at {}; remove it and re-add with a future time",
+            cmd.name,
+            run_at.format("%Y-%m-%d %H:%M:%S UTC")
+        );
+    }
+
     schedule.status = ScheduleStatus::Enabled;
     schedule.updated_at = chrono::Utc::now();
     storage.save_schedule(&schedule)?;
@@ -1086,7 +1099,11 @@ const MAX_RUN_ADOPT_AGE_SECS: i64 = 15 * 60;
 /// this execution, its pre-created run record is adopted; otherwise (a native
 /// scheduled run) a new record is created. Either way the record is completed
 /// with the actual exit code, so history is never stuck in `running`.
-async fn handle_exec(storage: &Storage, cmd: ExecCommand) -> Result<()> {
+///
+/// Natively scheduled one-off schedules are disarmed after their run: launchd
+/// `StartCalendarInterval` has no year field, so leaving the job loaded would
+/// make it recur silently every year.
+async fn handle_exec(storage: &Storage, backend: &dyn Backend, cmd: ExecCommand) -> Result<()> {
     if cmd.args.is_empty() {
         anyhow::bail!("no command provided after '--'");
     }
@@ -1127,6 +1144,17 @@ async fn handle_exec(storage: &Storage, cmd: ExecCommand) -> Result<()> {
     }
 
     storage.save_run(&run)?;
+
+    // Disarm one-off schedules after their first native run. Manual runs
+    // (adopted `skdlr run` records) leave the scheduled time untouched.
+    if !run.manual && schedule.is_one_off() && schedule.status == ScheduleStatus::Enabled {
+        let mut expired = schedule.clone();
+        expired.status = ScheduleStatus::Disabled;
+        expired.updated_at = chrono::Utc::now();
+        storage.save_schedule(&expired)?;
+        backend.uninstall(&expired).await?;
+    }
+
     Ok(())
 }
 
