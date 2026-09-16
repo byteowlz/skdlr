@@ -11,6 +11,7 @@ use clap_complete::Shell;
 use skdlr_core::agent_ctx::AgentContext;
 use skdlr_core::backend::{Backend, BackendKind, create_backend_with_paths};
 use skdlr_core::models::{Run, RunStatus, Schedule, ScheduleKind, ScheduleStatus};
+use skdlr_core::notify;
 use skdlr_core::paths::AppPaths;
 use skdlr_core::validation::{
     validate_cron_expression, validate_run_at, validate_schedule, validate_schedule_name,
@@ -44,8 +45,10 @@ async fn run() -> Result<()> {
         Command::Enable(cmd) => handle_enable(&storage, backend.as_ref(), cmd).await,
         Command::Disable(cmd) => handle_disable(&storage, backend.as_ref(), cmd).await,
         Command::Run(cmd) => handle_run(&storage, backend.as_ref(), cmd).await,
+        Command::RunOnce(cmd) => handle_once(&storage, &paths, cmd).await,
         Command::Logs(cmd) => handle_logs(&storage, backend.as_ref(), &cmd).await,
         Command::Exec(cmd) => handle_exec(&storage, backend.as_ref(), cmd).await,
+        Command::OnceExec(cmd) => handle_once_exec(&storage, cmd).await,
         Command::Status => handle_status(&storage, backend.as_ref()).await,
         Command::Next => handle_next(&storage, backend.as_ref()).await,
         Command::Backend => handle_backend(backend.as_ref()),
@@ -102,6 +105,10 @@ enum Command {
     /// Trigger an immediate run
     Run(RunCommand),
 
+    /// Run a one-off background task and notify the requesting agent on completion
+    #[command(name = "once", alias = "run-once")]
+    RunOnce(RunOnceCommand),
+
     /// View execution history
     Logs(LogsCommand),
 
@@ -130,6 +137,12 @@ enum Command {
     /// Executes the trailing program and records the run lifecycle in storage.
     #[command(hide = true, name = "__exec")]
     Exec(ExecCommand),
+
+    /// Internal recorder for one-off background tasks. Invoked by the detached
+    /// child spawned by `run-once`; records the run, delivers on-exit
+    /// notification, and cleans up.
+    #[command(hide = true, name = "__once")]
+    OnceExec(OnceExecCommand),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -245,6 +258,38 @@ struct LogsCommand {
 #[derive(Debug, Clone, Args)]
 #[command(hide = true)]
 struct ExecCommand {
+    /// Schedule name
+    name: String,
+
+    /// Program and arguments to execute
+    #[arg(last = true)]
+    args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+struct RunOnceCommand {
+    /// Name for this one-off task (used as identifier and completion label)
+    name: String,
+
+    /// Return-address target for the completion notification. Overrides the
+    /// auto-detected `AGENT_CTX_AGENT_ADDRESS` / `HERDR_PANE_ID` address.
+    #[arg(long)]
+    target: Option<String>,
+
+    /// Custom on-exit action (shell command) run after completion, in place of
+    /// the default agent-notify notification. `{target}`, `{exit}`, `{name}`
+    /// tokens are substituted.
+    #[arg(long)]
+    on_exit: Option<String>,
+
+    /// Program and arguments to execute (after `--`)
+    #[arg(last = true)]
+    args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+#[command(hide = true)]
+struct OnceExecCommand {
     /// Schedule name
     name: String,
 
@@ -1092,6 +1137,152 @@ async fn handle_run(storage: &Storage, backend: &dyn Backend, cmd: RunCommand) -
 
     println!("Started run {}", run.id);
     Ok(())
+}
+
+/// Runs a one-off background task: persists it as a one-off schedule carrying
+/// the caller's notification return address, then spawns a detached child that
+/// executes it and delivers an on-completion notification (see `__once`).
+///
+/// The notification target is captured at submit time from the caller's
+/// environment (`AGENT_CTX_AGENT_ADDRESS`, falling back to `HERDR_PANE_ID`),
+/// so the requesting agent is reached without the caller needing to name it.
+/// An explicit `--target` overrides the auto-detected address.
+async fn handle_once(storage: &Storage, paths: &AppPaths, cmd: RunOnceCommand) -> Result<()> {
+    validate_schedule_name(&cmd.name)?;
+    if cmd.args.is_empty() {
+        anyhow::bail!("no command provided after '--'");
+    }
+    if storage.get_schedule_by_name(&cmd.name)?.is_some() {
+        anyhow::bail!("a task named '{}' already exists", cmd.name);
+    }
+
+    let command_str = sh_join(&cmd.args);
+    let target = notify::resolve_target(cmd.target.as_deref());
+
+    let mut schedule = Schedule::new_one_off(
+        &cmd.name,
+        chrono::Utc::now() + chrono::Duration::seconds(1),
+        command_str,
+    );
+    if let Some(t) = &target {
+        schedule = schedule.with_notify_target(t);
+    }
+    if let Some(action) = &cmd.on_exit {
+        schedule = schedule.with_on_exit(action);
+    }
+    storage.save_schedule(&schedule)?;
+
+    // Spawn a detached child that re-invokes this binary via `__once`, inheriting
+    // the current environment. Output is captured to the per-task log file.
+    let exe = std::env::current_exe()?;
+    let log_dir = paths.data_dir.join("logs");
+    std::fs::create_dir_all(&log_dir)?;
+    let log_file = log_dir.join(format!("{}.log", cmd.name));
+
+    let mut parts = vec![
+        sh_quote(&exe.to_string_lossy()),
+        "__once".to_string(),
+        sh_quote(&cmd.name),
+        "--".to_string(),
+    ];
+    parts.extend(cmd.args.iter().map(|a| sh_quote(a)));
+    let inner = parts.join(" ");
+    let shell_cmd = format!(
+        "nohup {inner} > {} 2>&1 &",
+        sh_quote(&log_file.to_string_lossy())
+    );
+
+    let status = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&shell_cmd)
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("failed to detach the one-off task");
+    }
+
+    println!("Scheduled one-off task '{}'.", cmd.name);
+    match &target {
+        Some(t) => println!("Will notify {t} on completion."),
+        None => println!(
+            "No notification target detected (no AGENT_CTX/HERDR_PANE_ID); use --target to notify."
+        ),
+    }
+    println!("Log: {}", log_file.display());
+    Ok(())
+}
+
+/// Internal recorder for one-off background tasks. Runs in the detached child
+/// spawned by `run-once`: executes the command, records the run + exit code,
+/// delivers the on-exit notification, then removes the one-off schedule.
+async fn handle_once_exec(storage: &Storage, cmd: OnceExecCommand) -> Result<()> {
+    if cmd.args.is_empty() {
+        anyhow::bail!("no command provided after '--'");
+    }
+    let schedule = storage
+        .get_schedule_by_name(&cmd.name)?
+        .ok_or_else(|| anyhow::anyhow!("task '{}' not found", cmd.name))?;
+
+    let mut run = Run::new(schedule.id, true);
+    storage.save_run(&run)?;
+
+    let mut command = tokio::process::Command::new(&cmd.args[0]);
+    command.args(&cmd.args[1..]);
+    if let Some(workdir) = &schedule.workdir {
+        command.current_dir(workdir);
+    }
+    for (key, value) in &schedule.env {
+        command.env(key, value);
+    }
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    let exit_code = match command.status().await {
+        Ok(status) => {
+            let code = status.code().unwrap_or(-1);
+            run.complete(code);
+            code
+        }
+        Err(e) => {
+            run.fail(format!("failed to execute command: {e}"));
+            -1
+        }
+    };
+    storage.save_run(&run)?;
+
+    // Deliver the on-completion notification (default agent-notify, or the
+    // custom on-exit action when configured).
+    notify::deliver(&notify::Completion {
+        label: schedule.name.clone(),
+        exit_code,
+        target: schedule.notify_target.clone(),
+        on_exit: schedule.on_exit.clone(),
+    })?;
+
+    // One-off tasks finalize as disabled records, preserving run history
+    // (including the recorded exit code) queryable via `skdlr logs <name>`.
+    let mut done = schedule.clone();
+    done.status = ScheduleStatus::Disabled;
+    done.updated_at = chrono::Utc::now();
+    storage.save_schedule(&done)?;
+    Ok(())
+}
+
+/// Quotes a single argument for `sh -c` (POSIX single-quote escaping).
+#[cfg(unix)]
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(not(unix))]
+fn sh_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\\\""))
+}
+
+/// Joins arguments into a single display string (used for `schedule.command`).
+fn sh_join(args: &[String]) -> String {
+    args.join(" ")
 }
 
 fn same_native_execution(left: &Run, right: &Run) -> bool {

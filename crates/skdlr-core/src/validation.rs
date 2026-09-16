@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::error::{Error, Result};
-use crate::models::{Schedule, ScheduleKind};
+use crate::models::{Schedule, ScheduleKind, ScheduleStatus};
 
 /// Validates a schedule name for safe use in backend identifiers and paths.
 pub fn validate_schedule_name(name: &str) -> Result<()> {
@@ -69,7 +69,15 @@ pub fn validate_schedule_kind(kind: &ScheduleKind) -> Result<()> {
 /// Validates schedule fields used in backend files.
 pub fn validate_schedule(schedule: &Schedule) -> Result<()> {
     validate_schedule_name(&schedule.name)?;
-    validate_schedule_kind(&schedule.kind)?;
+
+    // A disabled one-off is a finalized record (e.g. a completed one-off
+    // background task kept for its run history); its `run_at` may legitimately
+    // lie in the past, so the future-requirement is skipped for those.
+    let kind_is_finalized = schedule.status == ScheduleStatus::Disabled
+        && matches!(schedule.kind, ScheduleKind::OneOff { .. });
+    if !kind_is_finalized {
+        validate_schedule_kind(&schedule.kind)?;
+    }
 
     reject_controls("command", &schedule.command)?;
 
@@ -147,5 +155,19 @@ mod tests {
         let mut schedule = Schedule::new("test", "0 * * * *", "echo ok");
         schedule.description = Some("bad\nline".to_string());
         assert!(validate_schedule(&schedule).is_err());
+    }
+
+    #[test]
+    fn validate_schedule_permits_past_run_at_for_disabled_one_off() {
+        // A completed one-off background task is kept as a disabled record with
+        // a `run_at` now in the past; this must remain storable.
+        let past = Utc::now() - chrono::Duration::seconds(30);
+        let mut schedule = Schedule::new_one_off("done_task", past, "echo done");
+        schedule.status = ScheduleStatus::Disabled;
+        assert!(validate_schedule(&schedule).is_ok());
+
+        // But an *enabled* one-off must still have a future run_at.
+        let enabled = Schedule::new_one_off("enabled_task", past, "echo x");
+        assert!(validate_schedule(&enabled).is_err());
     }
 }

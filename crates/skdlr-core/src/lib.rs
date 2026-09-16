@@ -12,6 +12,7 @@ pub mod config;
 pub mod dispatcher;
 pub mod error;
 pub mod models;
+pub mod notify;
 pub mod paths;
 pub mod scheduler;
 pub mod storage;

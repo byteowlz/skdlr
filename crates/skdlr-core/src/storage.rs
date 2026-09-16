@@ -70,7 +70,9 @@ impl Storage {
                 backend_id TEXT,
                 max_retries INTEGER NOT NULL DEFAULT 0,
                 retry_delay_secs INTEGER NOT NULL DEFAULT 30,
-                agent_ctx TEXT
+                agent_ctx TEXT,
+                notify_target TEXT,
+                on_exit TEXT
             );
 
             CREATE TABLE IF NOT EXISTS runs (
@@ -166,6 +168,13 @@ impl Storage {
         let _ = self
             .conn
             .execute("ALTER TABLE schedules ADD COLUMN agent_ctx TEXT", []);
+        // Add on-completion notification columns (return address + custom action)
+        let _ = self
+            .conn
+            .execute("ALTER TABLE schedules ADD COLUMN notify_target TEXT", []);
+        let _ = self
+            .conn
+            .execute("ALTER TABLE schedules ADD COLUMN on_exit TEXT", []);
         // Drop old unique index on name only (if exists) — replaced by (tenant_id, name)
         let _ = self
             .conn
@@ -195,8 +204,8 @@ impl Storage {
         self.conn.execute(
             "INSERT INTO schedules (id, tenant_id, name, description, cron_expr, run_at, command,
                 workdir, env, status, user, created_at, updated_at, paused_until, backend_id,
-                max_retries, retry_delay_secs, agent_ctx)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                max_retries, retry_delay_secs, agent_ctx, notify_target, on_exit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
              ON CONFLICT(id) DO UPDATE SET
                 tenant_id = excluded.tenant_id,
                 name = excluded.name,
@@ -213,7 +222,9 @@ impl Storage {
                 backend_id = excluded.backend_id,
                 max_retries = excluded.max_retries,
                 retry_delay_secs = excluded.retry_delay_secs,
-                agent_ctx = excluded.agent_ctx",
+                agent_ctx = excluded.agent_ctx,
+                notify_target = excluded.notify_target,
+                on_exit = excluded.on_exit",
             params![
                 schedule.id.to_string(),
                 &schedule.tenant_id,
@@ -233,6 +244,8 @@ impl Storage {
                 schedule.max_retries,
                 schedule.retry_delay_secs as i64,
                 agent_ctx_json,
+                &schedule.notify_target,
+                &schedule.on_exit,
             ],
         )?;
         Ok(())
@@ -244,7 +257,7 @@ impl Storage {
             .query_row(
                 "SELECT id, tenant_id, name, description, cron_expr, run_at, command, workdir,
                     env, status, user, created_at, updated_at, paused_until, backend_id,
-                    max_retries, retry_delay_secs, agent_ctx
+                    max_retries, retry_delay_secs, agent_ctx, notify_target, on_exit
                  FROM schedules WHERE id = ?1",
                 params![id.to_string()],
                 Self::row_to_schedule,
@@ -268,7 +281,7 @@ impl Storage {
             .query_row(
                 "SELECT id, tenant_id, name, description, cron_expr, run_at, command, workdir,
                     env, status, user, created_at, updated_at, paused_until, backend_id,
-                    max_retries, retry_delay_secs, agent_ctx
+                    max_retries, retry_delay_secs, agent_ctx, notify_target, on_exit
                  FROM schedules WHERE tenant_id = ?1 AND name = ?2",
                 params![tenant_id, name],
                 Self::row_to_schedule,
@@ -287,7 +300,7 @@ impl Storage {
         let mut stmt = self.conn.prepare(
             "SELECT id, tenant_id, name, description, cron_expr, run_at, command, workdir,
                 env, status, user, created_at, updated_at, paused_until, backend_id,
-                max_retries, retry_delay_secs, agent_ctx
+                max_retries, retry_delay_secs, agent_ctx, notify_target, on_exit
              FROM schedules WHERE tenant_id = ?1 ORDER BY name",
         )?;
 
@@ -303,7 +316,7 @@ impl Storage {
         let mut stmt = self.conn.prepare(
             "SELECT id, tenant_id, name, description, cron_expr, run_at, command, workdir,
                 env, status, user, created_at, updated_at, paused_until, backend_id,
-                max_retries, retry_delay_secs, agent_ctx
+                max_retries, retry_delay_secs, agent_ctx, notify_target, on_exit
              FROM schedules ORDER BY tenant_id, name",
         )?;
 
@@ -701,6 +714,8 @@ impl Storage {
             agent_ctx: row
                 .get::<_, Option<String>>(17)?
                 .and_then(|json| serde_json::from_str(&json).ok()),
+            notify_target: row.get::<_, Option<String>>(18)?,
+            on_exit: row.get::<_, Option<String>>(19)?,
         })
     }
 

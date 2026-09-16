@@ -137,6 +137,19 @@ pub struct Schedule {
     /// process had no `AGENT_CTX` environment.
     #[serde(default)]
     pub agent_ctx: Option<crate::agent_ctx::AgentContext>,
+
+    /// Return address for on-completion notification delivery (e.g. a herdr
+    /// pane id / `AGENT_CTX_AGENT_ADDRESS`). When set, skdlr delivers a
+    /// completion notification to this target after a run finishes. It is a
+    /// routing hint for delivery only — never an authorization signal.
+    #[serde(default)]
+    pub notify_target: Option<String>,
+
+    /// Optional shell command to run after a run completes, in place of the
+    /// default completion notification. `{target}`, `{exit}`, and `{name}`
+    /// tokens are substituted. `None` = use the default delivery.
+    #[serde(default)]
+    pub on_exit: Option<String>,
 }
 
 fn default_tenant_id() -> String {
@@ -173,6 +186,8 @@ impl Schedule {
             max_retries: 0,
             retry_delay_secs: 30,
             agent_ctx: None,
+            notify_target: None,
+            on_exit: None,
         }
     }
 
@@ -201,6 +216,8 @@ impl Schedule {
             max_retries: 0,
             retry_delay_secs: 30,
             agent_ctx: None,
+            notify_target: None,
+            on_exit: None,
         }
     }
 
@@ -253,6 +270,18 @@ impl Schedule {
     /// Returns the `run_at` timestamp if this is a one-off schedule.
     pub fn run_at(&self) -> Option<DateTime<Utc>> {
         self.kind.run_at()
+    }
+
+    /// Sets the notification return-address target for on-completion delivery.
+    pub fn with_notify_target(mut self, target: impl Into<String>) -> Self {
+        self.notify_target = Some(target.into());
+        self
+    }
+
+    /// Sets a custom on-exit action (shell command) run after completion.
+    pub fn with_on_exit(mut self, command: impl Into<String>) -> Self {
+        self.on_exit = Some(command.into());
+        self
     }
 }
 
