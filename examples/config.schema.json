@@ -80,7 +80,7 @@
     }
   },
   "stability": "accepted",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "definitions": {
     "ApiConfig": {
       "description": "HTTP API server configuration.",
