@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderValue;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{Json, Router, routing::get};
@@ -81,7 +82,7 @@ async fn try_main() -> Result<()> {
     let cli = Cli::parse();
 
     let paths = AppPaths::discover(None)?;
-    let _config = if let Some(config_path) = &cli.config {
+    let config = if let Some(config_path) = &cli.config {
         SkdlrConfig::load_from_path(std::path::Path::new(config_path))?
     } else {
         SkdlrConfig::load(&paths, false)?
@@ -90,8 +91,20 @@ async fn try_main() -> Result<()> {
     let storage = Arc::new(Mutex::new(Storage::open(&paths.db_path)?));
     let state = AppState { storage };
 
+    // CORS uses an exact-origin allowlist (never `*`/Any). Origins come from
+    // the `[api]` config section; a request from any other origin is rejected.
+    let allowed_origins: Vec<HeaderValue> = config
+        .api
+        .allowed_origins
+        .iter()
+        .map(|origin| {
+            HeaderValue::from_str(origin)
+                .map_err(|_| anyhow::anyhow!("invalid CORS origin in config: {origin}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(allowed_origins)
         .allow_methods(Any)
         .allow_headers(Any);
 

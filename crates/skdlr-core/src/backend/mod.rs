@@ -157,16 +157,14 @@ pub fn create_backend(kind: BackendKind, config: &crate::SkdlrConfig) -> Box<dyn
 pub fn create_backend_with_paths(
     kind: BackendKind,
     config: &crate::SkdlrConfig,
-    paths: Option<&crate::paths::AppPaths>,
+    _paths: Option<&crate::paths::AppPaths>,
 ) -> Box<dyn Backend> {
     match kind {
         #[cfg(target_os = "linux")]
         BackendKind::Systemd => Box::new(systemd::SystemdBackend::new(config)),
 
         #[cfg(target_os = "macos")]
-        BackendKind::Launchd => {
-            Box::new(launchd::LaunchdBackend::with_paths(config, paths))
-        }
+        BackendKind::Launchd => Box::new(launchd::LaunchdBackend::with_paths(config, _paths)),
 
         #[cfg(target_os = "windows")]
         BackendKind::Schtasks => Box::new(schtasks::SchtasksBackend::new(config)),

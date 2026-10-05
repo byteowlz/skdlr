@@ -155,6 +155,32 @@ check_interval_secs = 60
 - Run `cargo test` for platform-agnostic tests
 - Cross-platform testing via CI matrix
 
+## Byteowlz Guardrails (machine-checked)
+
+- **Static facts are machine-checked, not copied here.** Commands -> `just`
+  (run `just` to list); issues -> `trx`; crate/version facts + YAML constraint
+  + config examples freshness -> `scripts/drift-check.sh`. If the command and
+  this file disagree, the command wins.
+- Run `just drift-check` after touching any manifest or versioned claim, and
+  `just check-all` (fmt + clippy -D warnings + config validation + test) before
+  committing anything significant.
+- **Config examples are generated**, not hand-edited: after editing
+  `config::SkdlrConfig`, run `just generate-config`. The
+  `validate_examples_are_up_to_date` test (in `skdlr-core::schema`) fails if you
+  forget.
+- **API CORS is exact-origin only.** The origin allowlist lives in the `[api]`
+  config section; never use `Any`/`*`. Never expose configuration (which may
+  hold secrets) over the wire.
+- **Config and machine output are JSON/TOML only. Never add a YAML output mode,
+  a YAML dependency, or a YAML example.**
+- **Domain glossary**: read `CONTEXT.md` (not a spec — glossary only).
+- **Architecture decisions**: record hard-to-reverse choices in `docs/adr/`
+  (start from `0000-template.md`).
+- **Git hooks**: run `just setup-hooks` to wire the vendored `schema-guard`
+  (pre-commit/pre-push).
+- **`rmcp` and `rmcp-macros` are pinned together** in the root `Cargo.toml`;
+  bump both in lockstep.
+
 ---
 
 ## Agent Coordination with mailz

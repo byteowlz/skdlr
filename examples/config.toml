@@ -1,29 +1,19 @@
-#:schema https://raw.githubusercontent.com/byteowlz/schemas/refs/heads/main/skdlr/skdlr.config.schema.json
+#:schema https://github.com/byteowlz/skdlr/schemas/config.schema.json
 
-# Example configuration for skdlr.
+# Configuration for skdlr.
 # Copy this file to $XDG_CONFIG_HOME/skdlr/config.toml and adjust as needed.
+# Regenerate with `just generate-config`.
 
-profile = "default"
+service_prefix = "skdlr"
 
 [logging]
-# Valid levels: error, warn, info, debug, trace
 level = "info"
-# Optional path for log file output; supports ~ and environment variables.
-# file = "~/Library/Logs/skdlr.log"
 
-[runtime]
-# Override the worker pool size; defaults to logical CPU count when unset.
-# parallelism = 8
-# Timeout in seconds for long-running operations.
-timeout = 60
-fail_fast = true
-
-[paths]
-# Uncomment to move persistent data/state to custom directories.
-# data_dir = "$XDG_DATA_HOME/skdlr"
-# state_dir = "$XDG_STATE_HOME/skdlr"
+[internal]
+check_interval_secs = 60
 
 [executor]
-# Optional wrapper to run scheduled commands through a sandbox or launcher.
-# wrapper = "octo-sandbox"
-# wrapper_args = ["--config", "/etc/octo/sandbox.toml", "--workspace", "{workdir}", "--"]
+wrapper_args = []
+
+[api]
+allowed_origins = ["http://localhost:3000"]

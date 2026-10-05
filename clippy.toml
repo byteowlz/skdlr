@@ -1,0 +1,56 @@
+# ============================================
+# CLIPPY CONFIGURATION
+# ============================================
+# Place this file in your project root (next to Cargo.toml).
+# These thresholds complement the lint configuration in Cargo.toml.
+
+# Complexity thresholds - prevent sprawling functions
+# (cyclomatic-complexity-threshold is deprecated in clippy 1.98 and maps to the
+# cognitive threshold; keep only the canonical key.)
+# NOTE: the rust-cli template targets 15, but skdlr's existing scheduler/dispatch
+# code is more complex. Set the baseline to clippy's default (25) so the tree
+# stays `-D warnings`-clean; tightening to 15 is a tracked follow-up.
+cognitive-complexity-threshold = 25
+type-complexity-threshold = 200
+too-many-lines-threshold = 100
+
+# Domain terms that shouldn't trigger spelling warnings in docs
+doc-valid-idents = [
+    "skdlr",
+    "skdlr-api",
+    "skdlr-cli",
+    "skdlr-core",
+    "skdlr-mcp",
+    "skdlr-service",
+    "skdlr-tui",
+    "Systemd",     # Linux scheduler backend
+    "Launchd",     # macOS scheduler backend
+    "Schtasks",    # Windows scheduler backend
+    "systemd",     # unit / timer naming
+    "launchd",     # plist / agent naming
+    "schtasks",    # task command
+    "cron",        # schedule expressions
+    "Axum",        # HTTP framework
+    "Ratatui",     # TUI framework
+    "Crossterm",   # terminal backend
+    "Rusqlite",    # SQLite wrapper
+    "SQLite",
+    "Schemars",    # JSON schema generation
+    "XDG",
+    "TTY",
+    "CLI",
+    "TUI",
+    "MCP",
+    "API",
+    "HTTP",
+    "HTTPS",
+    "TCP",
+    "UDP",
+    "JSON",
+    "TOML",
+    "UUID",
+    "URL",
+    "AUR",
+    "SemVer",
+    "AST",
+]

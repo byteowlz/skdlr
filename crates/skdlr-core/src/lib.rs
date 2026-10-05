@@ -15,6 +15,7 @@ pub mod models;
 pub mod notify;
 pub mod paths;
 pub mod scheduler;
+pub mod schema;
 pub mod storage;
 pub mod validation;
 
@@ -27,6 +28,7 @@ pub use models::{
     ScheduleStatus,
 };
 pub use scheduler::{Scheduler, SchedulerConfig};
+pub use schema::{REPO_URL, write_generated_files};
 pub use storage::Storage;
 
 /// Application name used for config directories and environment prefix.

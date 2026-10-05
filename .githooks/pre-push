@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# pre-push — EGRESS gate (secondary). Runs the schema guard against the whole
+# push range, plus a placeholder for secrets/credential scan (add later).
+# Primary agent guard is pre-commit; pre-push is for what must not leave the machine.
+set -uo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+base=""
+while read -r _local_ref _local_sha remote_ref remote_sha; do
+  if [ "$remote_sha" != "0000000000000000000000000000000000000000" ]; then
+    base="$remote_sha"; break
+  fi
+done
+if [ -z "$base" ]; then
+  base="$(git rev-parse HEAD~ 2>/dev/null || echo '')"
+fi
+
+files=""
+if [ -n "$base" ]; then
+  files="$(git diff --name-only "$base"...HEAD 2>/dev/null || true)"
+else
+  files="$(git diff --name-only HEAD 2>/dev/null || true)"
+fi
+
+echo "$files" | "$DIR/schema-guard"
+rc=$?
+[ $rc -ne 0 ] && exit $rc
+
+# Egress gate placeholder (enable when we add a scanner):
+# python3 "$DIR/scan-secrets" < push-range-files || exit 1
+exit 0

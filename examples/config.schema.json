@@ -1,90 +1,156 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/byteowlz/skdlr/schemas/config.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "skdlr configuration",
   "description": "Configuration schema for skdlr",
   "type": "object",
   "properties": {
     "$schema": {
-      "type": "string",
-      "description": "JSON Schema reference for editor support"
+      "description": "JSON Schema reference for editor support",
+      "type": "string"
     },
-    "profile": {
-      "type": "string",
-      "description": "Active configuration profile",
-      "default": "default"
-    },
-    "logging": {
-      "type": "object",
-      "description": "Logging configuration",
-      "properties": {
-        "level": {
-          "type": "string",
-          "description": "Log level",
-          "enum": ["error", "warn", "info", "debug", "trace"],
-          "default": "info"
-        },
-        "file": {
-          "type": "string",
-          "description": "Optional path for log file output. Supports ~ and environment variables."
+    "api": {
+      "description": "HTTP API server configuration.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/ApiConfig"
         }
-      },
-      "additionalProperties": false
+      ],
+      "default": {
+        "allowed_origins": [
+          "http://localhost:3000"
+        ]
+      }
     },
-    "runtime": {
-      "type": "object",
-      "description": "Runtime configuration",
-      "properties": {
-        "parallelism": {
-          "type": "integer",
-          "description": "Worker pool size. Defaults to logical CPU count.",
-          "minimum": 1
-        },
-        "timeout": {
-          "type": "integer",
-          "description": "Timeout in seconds for long-running operations",
-          "default": 60,
-          "minimum": 1
-        },
-        "fail_fast": {
-          "type": "boolean",
-          "description": "Stop on first error",
-          "default": true
-        }
-      },
-      "additionalProperties": false
+    "backend": {
+      "description": "Backend to use (auto-detected if not set).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
     },
-    "paths": {
-      "type": "object",
-      "description": "Custom paths for data and state",
-      "properties": {
-        "data_dir": {
-          "type": "string",
-          "description": "Directory for persistent data. Supports ~ and environment variables."
-        },
-        "state_dir": {
-          "type": "string",
-          "description": "Directory for state files. Supports ~ and environment variables."
-        }
-      },
-      "additionalProperties": false
+    "default_workdir": {
+      "description": "Default working directory for schedules.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
     },
     "executor": {
-      "type": "object",
-      "description": "Executor wrapper for scheduled commands",
-      "properties": {
-        "wrapper": {
-          "type": "string",
-          "description": "Wrapper binary to run commands through (e.g., octo-sandbox)"
-        },
-        "wrapper_args": {
-          "type": "array",
-          "description": "Arguments passed to wrapper before the scheduled command",
-          "items": { "type": "string" }
+      "description": "Executor wrapper configuration.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/ExecutorConfig"
         }
-      },
-      "additionalProperties": false
+      ],
+      "default": {
+        "wrapper": null,
+        "wrapper_args": []
+      }
+    },
+    "internal": {
+      "description": "Internal backend configuration.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/InternalConfig"
+        }
+      ],
+      "default": {
+        "check_interval_secs": 60
+      }
+    },
+    "logging": {
+      "description": "Logging configuration.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/LoggingConfig"
+        }
+      ],
+      "default": {
+        "file": null,
+        "level": "info"
+      }
+    },
+    "service_prefix": {
+      "description": "Prefix for service/timer names.",
+      "type": "string",
+      "default": "skdlr"
     }
   },
-  "additionalProperties": false
+  "stability": "accepted",
+  "version": "0.3.0",
+  "definitions": {
+    "ApiConfig": {
+      "description": "HTTP API server configuration.",
+      "type": "object",
+      "properties": {
+        "allowed_origins": {
+          "description": "Exact origins allowed to call the API (CORS). Never `*`.",
+          "type": "array",
+          "default": [
+            "http://localhost:3000"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ExecutorConfig": {
+      "description": "Executor wrapper configuration for running scheduled commands.",
+      "type": "object",
+      "properties": {
+        "wrapper": {
+          "description": "Wrapper binary to run all commands through (e.g., \"octo-sandbox\").",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "wrapper_args": {
+          "description": "Arguments passed to wrapper before the scheduled command.\nSupports placeholders: {name}, {workdir}, {command}",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "InternalConfig": {
+      "description": "Internal backend configuration.",
+      "type": "object",
+      "properties": {
+        "check_interval_secs": {
+          "description": "Check interval in seconds.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 60,
+          "minimum": 0
+        }
+      }
+    },
+    "LoggingConfig": {
+      "description": "Logging configuration.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Optional log file path.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "level": {
+          "description": "Log level (trace, debug, info, warn, error).",
+          "type": "string",
+          "default": "info"
+        }
+      }
+    }
+  }
 }

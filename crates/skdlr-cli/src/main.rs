@@ -536,12 +536,9 @@ fn parse_date_with_time(input: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         "today" => (now.date_naive(), 1),
         "tomorrow" => (now.date_naive() + Duration::days(1), 1),
         day_name => {
-            if let Some(weekday) = parse_weekday(day_name) {
-                let days_ahead = days_until_weekday(now.weekday(), weekday, has_next);
-                (now.date_naive() + Duration::days(days_ahead), 1)
-            } else {
-                return None;
-            }
+            let weekday = parse_weekday(day_name)?;
+            let days_ahead = days_until_weekday(now.weekday(), weekday, has_next);
+            (now.date_naive() + Duration::days(days_ahead), 1)
         }
     };
 
@@ -725,13 +722,11 @@ fn parse_day_group_schedule(input: &str) -> Option<String> {
         .or_else(|| input.strip_prefix("weekdays "))
     {
         (r, "1-5")
-    } else if let Some(r) = input
-        .strip_prefix("weekends at ")
-        .or_else(|| input.strip_prefix("weekends "))
-    {
-        (r, "0,6")
     } else {
-        return None;
+        let r = input
+            .strip_prefix("weekends at ")
+            .or_else(|| input.strip_prefix("weekends "))?;
+        (r, "0,6")
     };
     let time = parse_time_string(rest)?;
     Some(format!(

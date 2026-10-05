@@ -110,7 +110,28 @@ fix:
     cargo clippy --workspace --fix --allow-dirty
 
 # Run all checks
-check-all: fmt-check lint test
+check-all: fmt-check lint validate-config test
+
+# === Config Generation ===
+
+# Generate config.toml and schema from the config struct
+generate-config:
+    cargo run -p skdlr-core --example generate_config
+
+# Validate that examples/ config files are up to date
+validate-config:
+    cargo test -p skdlr-core validate_examples_are_up_to_date
+
+# === Guardrails (byteowlz drift check) ===
+
+# Verify documented facts match machine-checked configuration
+drift-check:
+    ./scripts/drift-check.sh
+
+# Wire the vendored byteowlz git hooks (relative core.hooksPath)
+setup-hooks:
+    git config core.hooksPath .githooks
+    @echo "git hooks wired: core.hooksPath=.githooks"
 
 # === Documentation ===
 

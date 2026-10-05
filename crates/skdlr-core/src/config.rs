@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use config::{Config, Environment, File, FileFormat};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::BackendKind;
@@ -11,7 +12,7 @@ use crate::env_prefix;
 use crate::paths::{AppPaths, expand_str_path, write_default_config};
 
 /// Main skdlr configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct SkdlrConfig {
     /// Backend to use (auto-detected if not set).
@@ -31,6 +32,9 @@ pub struct SkdlrConfig {
 
     /// Executor wrapper configuration.
     pub executor: ExecutorConfig,
+
+    /// HTTP API server configuration.
+    pub api: ApiConfig,
 }
 
 impl SkdlrConfig {
@@ -96,12 +100,29 @@ impl Default for SkdlrConfig {
             logging: LoggingConfig::default(),
             internal: InternalConfig::default(),
             executor: ExecutorConfig::default(),
+            api: ApiConfig::default(),
+        }
+    }
+}
+
+/// HTTP API server configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct ApiConfig {
+    /// Exact origins allowed to call the API (CORS). Never `*`.
+    pub allowed_origins: Vec<String>,
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            allowed_origins: vec!["http://localhost:3000".to_string()],
         }
     }
 }
 
 /// Logging configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct LoggingConfig {
     /// Log level (trace, debug, info, warn, error).
@@ -120,7 +141,7 @@ impl Default for LoggingConfig {
 }
 
 /// Internal backend configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct InternalConfig {
     /// Check interval in seconds.
@@ -136,7 +157,7 @@ impl Default for InternalConfig {
 }
 
 /// Executor wrapper configuration for running scheduled commands.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct ExecutorConfig {
     /// Wrapper binary to run all commands through (e.g., "octo-sandbox").

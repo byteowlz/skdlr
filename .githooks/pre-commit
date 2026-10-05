@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# pre-commit — primary guard for agents. Validates STAGED schema changes
+# (the cheapest, earliest feedback point). Thin wrapper over schema-guard.
+set -uo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+[ -x "$DIR/schema-guard" ] || exit 0
+git diff --cached --name-only --diff-filter=ACMR 2>/dev/null | "$DIR/schema-guard"
+exit $?

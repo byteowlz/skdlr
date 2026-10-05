@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# byteowlz shared schema-versioning guard (core).
+# Reads a list of changed *.schema.json paths on stdin; validates each.
+# Invoked by the thin pre-commit / pre-push wrappers with the appropriate diff.
+# Self-contained; only depends on python3. Non-fragile: warns, rarely blocks.
+#
+# Policy: schemas/VERSIONING.md (byteowlz/schemas) — SemVer + stability
+# (draft|accepted|stable); changing a `stable` schema requires a MAJOR + ADR note.
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$ROOT"
+fail=0
+warn=0
+changed_schemas="$(grep -E '\.schema\.json$' || true)"
+
+[ -z "$changed_schemas" ] && exit 0
+
+# Locate schemas.json manifest (optional; warn-only).
+manifest="${MANIFEST:-}"
+[ -z "$manifest" ] && [ -f "$ROOT/schemas.json" ] && manifest="$ROOT/schemas.json"
+[ -z "$manifest" ] && [ -f "$ROOT/../schemas/schemas.json" ] && manifest="$ROOT/../schemas/schemas.json"
+[ -z "$manifest" ] && [ -f "$ROOT/schemas/schemas.json" ] && manifest="$ROOT/schemas/schemas.json"
+
+echo "byteowlz schema-guard: $(printf '%s' "$changed_schemas" | grep -c .) schema file(s)"
+
+for f in $changed_schemas; do
+  [ -f "$f" ] || continue
+  echo "  · $f"
+  if ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" 2>/tmp/pp_err; then
+    echo "    ✗ not valid JSON: $(head -1 /tmp/pp_err)"; fail=1; continue
+  fi
+  ver=$(python3 -c "import json;d=json.load(open('$f'));print(d.get('version',''))" 2>/dev/null)
+  stab=$(python3 -c "import json;d=json.load(open('$f'));print(d.get('stability',''))" 2>/dev/null)
+  if [ -z "$ver" ]; then echo "    ✗ missing top-level \"version\" (SemVer)"; fail=1; fi
+  case "$stab" in draft|accepted|stable) ;; *)
+    echo "    ✗ missing/invalid \"stability\" (want draft|accepted|stable, got '$stab')"; fail=1;; esac
+  if [ -n "$manifest" ]; then
+    name="$(basename "$(dirname "$f")")"
+    mv=$(python3 -c "
+import json
+try:
+    e=json.load(open('$manifest')).get('$name',{}); print(e.get('version',''))
+except Exception: print('')" 2>/dev/null)
+    if [ -n "$mv" ] && [ "$mv" != "$ver" ]; then
+      echo "    ! manifest ($mv) != schema ($ver) — bump schemas.json entry or the schema"; warn=1
+    fi
+  fi
+  case "$stab" in stable) echo "    ! stable schema changed: if breaking, must be MAJOR bump + ADR note"; warn=1;; esac
+done
+
+if [ "$fail" -gt 0 ]; then
+  echo "byteowlz schema-guard: BLOCKED ($fail error(s)). Fix, or bypass with --no-verify (not recommended)."
+  exit 1
+fi
+[ "$warn" -gt 0 ] && echo "byteowlz schema-guard: warnings above — review."
+exit "$fail"

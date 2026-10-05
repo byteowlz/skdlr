@@ -41,7 +41,8 @@ use crate::models::{Run, Schedule};
 use crate::validation::validate_schedule;
 
 /// Fallback PATH for generated `LaunchAgents` when the invoking process has none.
-const FALLBACK_PATH: &str = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+const FALLBACK_PATH: &str =
+    "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// Launchd backend for macOS.
 #[derive(Debug)]
@@ -130,7 +131,7 @@ impl LaunchdBackend {
         ]);
         argv.extend(super::render_launchd_args(schedule, &self.config)?);
         Ok(argv)
- }
+    }
 
     /// Returns the environment variables embedded in the generated plist.
     ///
@@ -211,7 +212,11 @@ impl LaunchdBackend {
             .paths
             .as_ref()
             .map(|paths| paths.db_path.clone())
-            .or_else(|| crate::paths::AppPaths::discover(None).ok().map(|p| p.db_path))
+            .or_else(|| {
+                crate::paths::AppPaths::discover(None)
+                    .ok()
+                    .map(|p| p.db_path)
+            })
             .ok_or_else(|| {
                 Error::backend("storage path unavailable; cannot record runs".to_string())
             })?;
@@ -535,12 +540,7 @@ fn cron_to_schedule_block(cron_expr: &str) -> Result<String> {
 
     // A fully wildcard expression means "every minute": StartCalendarInterval
     // cannot express that, but StartInterval can.
-    if minute.is_none()
-        && hour.is_none()
-        && day.is_none()
-        && month.is_none()
-        && dow.is_none()
-    {
+    if minute.is_none() && hour.is_none() && day.is_none() && month.is_none() && dow.is_none() {
         return Ok("    <key>StartInterval</key>\n    <integer>60</integer>".to_string());
     }
 
