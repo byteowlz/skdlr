@@ -1,3 +1,6 @@
 
 # Use bd merge for beads JSONL files
 .beads/issues.jsonl merge=beads
+.trx/issues.jsonl text eol=lf merge=union
+.trx/events.jsonl text eol=lf merge=union
+.trx/verifications.jsonl text eol=lf merge=union
