@@ -19,6 +19,7 @@ pub const ENV_VARS: &[&str] = &[
     "AGENT_CTX_PLATFORM_VERSION",
     "AGENT_CTX_HARNESS",
     "AGENT_CTX_RUN_MODE",
+    "AGENT_CTX_EXEC_ENV",
     "AGENT_CTX_PLATFORM_SESSION_ID",
     "AGENT_CTX_HARNESS_SESSION_ID",
     "AGENT_CTX_WORKSPACE_ID",
@@ -49,6 +50,9 @@ pub struct AgentContext {
     pub harness: Option<String>,
     /// `AGENT_CTX_RUN_MODE` — runtime mode (e.g. `runner`).
     pub run_mode: Option<String>,
+    /// `AGENT_CTX_EXEC_ENV` — producer-supplied execution environment/profile
+    /// label (open vocabulary; absent means unknown).
+    pub exec_env: Option<String>,
     /// `AGENT_CTX_PLATFORM_SESSION_ID` — stable platform session id.
     pub platform_session_id: Option<String>,
     /// `AGENT_CTX_HARNESS_SESSION_ID` — harness-native session id.
@@ -91,6 +95,12 @@ impl AgentContext {
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty())
         };
+        let get_exec_env = |name: &str| -> Option<String> {
+            get(name).filter(|v| {
+                // v3 bounded-string contract: max length 256, no control chars.
+                v.chars().count() <= 256 && !v.chars().any(|c| c.is_control())
+            })
+        };
 
         let ctx = Self {
             version: get("AGENT_CTX_VERSION"),
@@ -98,6 +108,7 @@ impl AgentContext {
             platform_version: get("AGENT_CTX_PLATFORM_VERSION"),
             harness: get("AGENT_CTX_HARNESS"),
             run_mode: get("AGENT_CTX_RUN_MODE"),
+            exec_env: get_exec_env("AGENT_CTX_EXEC_ENV"),
             platform_session_id: get("AGENT_CTX_PLATFORM_SESSION_ID"),
             harness_session_id: get("AGENT_CTX_HARNESS_SESSION_ID"),
             workspace_id: get("AGENT_CTX_WORKSPACE_ID"),
@@ -121,7 +132,7 @@ impl AgentContext {
 
     /// Iterates over `(env var name, value)` pairs, including `None` values.
     pub fn iter(&self) -> impl Iterator<Item = (&'static str, Option<&str>)> + '_ {
-        let items: [(&'static str, Option<&str>); 16] = [
+        let items: [(&'static str, Option<&str>); 17] = [
             ("AGENT_CTX_VERSION", self.version.as_deref()),
             ("AGENT_CTX_PLATFORM_NAME", self.platform_name.as_deref()),
             (
@@ -130,6 +141,7 @@ impl AgentContext {
             ),
             ("AGENT_CTX_HARNESS", self.harness.as_deref()),
             ("AGENT_CTX_RUN_MODE", self.run_mode.as_deref()),
+            ("AGENT_CTX_EXEC_ENV", self.exec_env.as_deref()),
             (
                 "AGENT_CTX_PLATFORM_SESSION_ID",
                 self.platform_session_id.as_deref(),
@@ -191,6 +203,67 @@ mod tests {
         assert_eq!(ctx.user_id.as_deref(), Some("u_123"));
         assert_eq!(ctx.platform_session_id, None);
         assert!(!ctx.is_empty());
+    }
+
+    #[test]
+    fn v3_exec_env_is_captured() {
+        let mut env = HashMap::new();
+        env.insert("AGENT_CTX_VERSION", "3");
+        env.insert("AGENT_CTX_EXEC_ENV", "linux-container");
+
+        let ctx = AgentContext::from_lookup(lookup_from(&env)).unwrap();
+        assert_eq!(ctx.version.as_deref(), Some("3"));
+        assert_eq!(ctx.exec_env.as_deref(), Some("linux-container"));
+    }
+
+    #[test]
+    fn exec_env_bounded_validation() {
+        let from = |exec: &str| {
+            AgentContext::from_lookup(|k| {
+                (k == "AGENT_CTX_VERSION").then(|| "3".to_string())
+                    .or_else(|| (k == "AGENT_CTX_EXEC_ENV").then(|| exec.to_string()))
+            })
+        };
+        // Open lowercase label accepted.
+        assert_eq!(
+            from("new-runtime-profile").unwrap().exec_env.as_deref(),
+            Some("new-runtime-profile")
+        );
+        // Control char rejected as unknown.
+        assert!(from("bad\nvalue").unwrap().exec_env.is_none());
+        // Oversize (257) rejected as unknown; boundary 256 accepted.
+        let big = "x".repeat(257);
+        assert!(from(&big).unwrap().exec_env.is_none());
+        let boundary = "y".repeat(256);
+        assert_eq!(from(&boundary).unwrap().exec_env.as_deref(), Some(boundary.as_str()));
+    }
+
+    #[test]
+    fn stored_record_new_and_old_round_trips() {
+        // New record with exec_env serializes and deserializes with it intact.
+        let new = AgentContext {
+            version: Some("3".into()),
+            exec_env: Some("windows-vm".into()),
+            harness: Some("pi".into()),
+            ..AgentContext::default()
+        };
+        let json = serde_json::to_string(&new).unwrap();
+        let parsed: AgentContext = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.exec_env.as_deref(), Some("windows-vm"));
+        assert_eq!(parsed.harness.as_deref(), Some("pi"));
+
+        // Legacy stored record with run_mode and no exec_env field still loads;
+        // exec_env is None, run_mode preserved, neither relabeled.
+        let mut legacy = serde_json::json!({
+            "version": "2",
+            "run_mode": "local",
+            "harness": "pi",
+        });
+        legacy.as_object_mut().unwrap().remove("exec_env");
+        let old: AgentContext = serde_json::from_value(legacy).unwrap();
+        assert!(old.exec_env.is_none());
+        assert_eq!(old.run_mode.as_deref(), Some("local"));
+        assert_eq!(old.harness.as_deref(), Some("pi"));
     }
 
     #[test]
